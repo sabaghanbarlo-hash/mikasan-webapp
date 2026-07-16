@@ -1,1 +1,334 @@
-PLACEHOLDER_INDEX
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Mikasan Narrator — Free Script-to-Video</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#F5E6CC; --panel:#fffaf2; --accent:#669966; --accent2:#a8342a; --ink:#2b2620; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background:#efe5d5; color:var(--ink); margin:0; padding:24px; }
+  h1 { font-size:1.4rem; margin-bottom:4px; }
+  .sub { color:#6b6255; margin-bottom:20px; font-size:0.9rem; }
+  .panel { background:var(--panel); border-radius:12px; padding:18px; margin-bottom:18px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+  label { display:block; font-weight:600; margin-bottom:6px; font-size:0.9rem; }
+  textarea, input[type=text], input[type=password] { width:100%; padding:10px; border-radius:8px; border:1px solid #d8cdb8; font-family:inherit; font-size:0.9rem; }
+  textarea { min-height:140px; resize:vertical; }
+  button { background:var(--accent); color:white; border:none; padding:10px 16px; border-radius:8px; font-weight:600; cursor:pointer; font-size:0.9rem; margin-top:8px; }
+  button:hover { opacity:0.9; }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  button.secondary { background:var(--accent2); }
+  .row { display:flex; gap:16px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:220px; }
+  canvas { border-radius:10px; border:1px solid #d8cdb8; width:100%; max-width:480px; display:block; }
+  .scene-card { border:1px solid #e2d6bd; border-radius:10px; padding:12px; margin-bottom:12px; background:#fffdf7; }
+  .scene-card h3 { margin:0 0 6px 0; font-size:1rem; }
+  .scene-meta { font-size:0.8rem; color:#8a7f6c; margin-bottom:6px; }
+  .status { font-size:0.85rem; color:#6b6255; margin-top:6px; }
+  .log { font-family:monospace; font-size:0.75rem; background:#1e1a14; color:#c9dfb8; padding:10px; border-radius:8px; max-height:160px; overflow:auto; white-space:pre-wrap; }
+  audio, video { width:100%; margin-top:6px; }
+  .pill { display:inline-block; background:var(--accent); color:white; border-radius:999px; padding:2px 10px; font-size:0.75rem; margin-right:6px; }
+</style>
+</head>
+<body>
+
+<h1>🎬 Mikasan Narrator — Free Script-to-Video</h1>
+<div class="sub">Script → scenes (Groq, free) → 2D character animation (canvas, free) → assembled video (ffmpeg.wasm, free). No paid APIs.</div>
+
+<div class="panel">
+  <label>1. Groq API key (free at console.groq.com — kept only in this browser tab, never sent anywhere else)</label>
+  <input type="password" id="groqKey" placeholder="gsk_...">
+  <label style="margin-top:14px;">2. Your long script</label>
+  <textarea id="script" placeholder="Paste your full story/script here..."></textarea>
+  <button id="breakdownBtn">Break into scenes</button>
+  <div class="status" id="breakdownStatus"></div>
+</div>
+
+<div class="panel" id="scenesPanel" style="display:none;">
+  <h2 style="margin-top:0;">3. Scenes</h2>
+  <div id="scenesList"></div>
+  <button id="renderAllBtn" style="display:none;">Render all scene animations</button>
+</div>
+
+<div class="panel" id="assemblePanel" style="display:none;">
+  <h2 style="margin-top:0;">4. Assemble final video</h2>
+  <p class="status">Each scene clip is silent (canvas animation only). Upload your Coqui XTTS-v2 narration for each scene below, or skip to preview without audio.</p>
+  <div id="audioUploads"></div>
+  <button id="assembleBtn" class="secondary">Build final video</button>
+  <div class="status" id="assembleStatus"></div>
+  <div class="log" id="ffmpegLog" style="display:none;"></div>
+  <video id="finalVideo" controls style="display:none; max-width:640px;"></video>
+  <a id="downloadLink" style="display:none;" download="mikasan-narrator-output.mp4">
+    <button style="margin-top:10px;">⬇ Download final video</button>
+  </a>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ffmpeg-wasm/0.12.10/ffmpeg.min.js"></script>
+<script>
+// ---------- CONFIG ----------
+const BG_COLOR = "#F5E6CC";       // solid background, sampled from character sheet
+const CANVAS_W = 1280, CANVAS_H = 720;
+const CHAR_IMG_SRC = "assets/character-front.png"; // you must supply this cutout
+
+let scenes = [];
+let sceneClips = {}; // sceneNumber -> Blob (webm)
+let charImg = new Image();
+charImg.src = CHAR_IMG_SRC;
+
+// ---------- STEP 1: Script -> Scenes via Groq ----------
+document.getElementById("breakdownBtn").onclick = async () => {
+  const key = document.getElementById("groqKey").value.trim();
+  const script = document.getElementById("script").value.trim();
+  const statusEl = document.getElementById("breakdownStatus");
+  if (!key || !script) { statusEl.textContent = "Add your Groq key and a script first."; return; }
+  statusEl.textContent = "Breaking script into scenes...";
+
+  const systemPrompt = `You break a narration script into cinematic scenes for a simple 2D chibi cartoon.
+Return ONLY valid JSON, no markdown fences, no preamble. Schema:
+{"scenes":[{"number":1,"description":"...","narration":"...","motion":"one of: idle_bob, gentle_sway, head_turn_left, head_turn_right, lean_in, wave, nod, shrug","camera":"one of: static, slow_zoom_in, slow_zoom_out, pan_left, pan_right","duration_seconds":4}]}
+Keep motion subtle and natural. Keep each scene 3-6 seconds. Narration text should be the exact words spoken in that scene, drawn directly from the script without altering the story.`;
+
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: script }
+        ],
+        temperature: 0.4
+      })
+    });
+    const data = await res.json();
+    let text = data.choices[0].message.content.trim();
+    text = text.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(text);
+    scenes = parsed.scenes;
+    statusEl.textContent = `Got ${scenes.length} scenes.`;
+    renderSceneList();
+  } catch (err) {
+    statusEl.textContent = "Error: " + err.message;
+  }
+};
+
+function renderSceneList() {
+  const list = document.getElementById("scenesList");
+  list.innerHTML = "";
+  scenes.forEach(s => {
+    const card = document.createElement("div");
+    card.className = "scene-card";
+    card.innerHTML = `
+      <h3>Scene ${s.number}</h3>
+      <div class="scene-meta">
+        <span class="pill">${s.motion}</span><span class="pill">${s.camera}</span>${s.duration_seconds}s
+      </div>
+      <div><strong>Action:</strong> ${s.description}</div>
+      <div><strong>Narration:</strong> "${s.narration}"</div>
+      <canvas id="canvas-${s.number}" width="${CANVAS_W}" height="${CANVAS_H}"></canvas>
+      <button data-scene="${s.number}" class="renderOneBtn">Render this scene's clip</button>
+      <video id="video-${s.number}" style="display:none;" controls></video>
+    `;
+    list.appendChild(card);
+  });
+  document.getElementById("scenesPanel").style.display = "block";
+  document.getElementById("renderAllBtn").style.display = "inline-block";
+  document.querySelectorAll(".renderOneBtn").forEach(btn => {
+    btn.onclick = () => renderScene(parseInt(btn.dataset.scene));
+  });
+  buildAudioUploadUI();
+}
+
+// ---------- STEP 2: Canvas animation per scene ----------
+function renderScene(num) {
+  return new Promise((resolve) => {
+    const scene = scenes.find(s => s.number === num);
+    const canvas = document.getElementById(`canvas-${num}`);
+    const ctx = canvas.getContext("2d");
+    const stream = canvas.captureStream(30);
+    const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9" });
+    const chunks = [];
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: "video/webm" });
+      sceneClips[num] = blob;
+      const vidEl = document.getElementById(`video-${num}`);
+      vidEl.src = URL.createObjectURL(blob);
+      vidEl.style.display = "block";
+      resolve();
+    };
+
+    const durationMs = (scene.duration_seconds || 4) * 1000;
+    const startTime = performance.now();
+    recorder.start();
+
+    function draw(now) {
+      const t = (now - startTime) / durationMs; // 0..1
+      ctx.fillStyle = BG_COLOR;
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+      // Camera transform
+      let camScale = 1, camX = 0;
+      if (scene.camera === "slow_zoom_in") camScale = 1 + 0.08 * t;
+      if (scene.camera === "slow_zoom_out") camScale = 1.08 - 0.08 * t;
+      if (scene.camera === "pan_left") camX = -40 * t;
+      if (scene.camera === "pan_right") camX = 40 * t;
+
+      // Character motion
+      let charScale = 1, rot = 0, offsetY = 0, offsetX = 0;
+      const wobble = Math.sin(t * Math.PI * 4);
+      if (scene.motion === "idle_bob") offsetY = Math.sin(t * Math.PI * 6) * 6;
+      if (scene.motion === "gentle_sway") rot = wobble * 0.02;
+      if (scene.motion === "head_turn_left") rot = -0.05 * Math.min(t * 2, 1);
+      if (scene.motion === "head_turn_right") rot = 0.05 * Math.min(t * 2, 1);
+      if (scene.motion === "lean_in") { charScale = 1 + 0.03 * t; offsetY = -4 * t; }
+      if (scene.motion === "wave") rot = wobble * 0.04;
+      if (scene.motion === "nod") offsetY = Math.abs(Math.sin(t * Math.PI * 5)) * 5;
+      if (scene.motion === "shrug") offsetY = -Math.abs(Math.sin(t * Math.PI * 3)) * 4;
+
+      ctx.save();
+      ctx.translate(CANVAS_W / 2 + camX, CANVAS_H / 2);
+      ctx.scale(camScale, camScale);
+      ctx.translate(offsetX, offsetY);
+      ctx.rotate(rot);
+      ctx.scale(charScale, charScale);
+      const ih = 620, iw = ih * (charImg.width / charImg.height || 0.55);
+      if (charImg.complete && charImg.naturalWidth > 0) {
+        ctx.drawImage(charImg, -iw / 2, -ih / 2 + 20, iw, ih);
+      } else {
+        // placeholder if character asset missing
+        ctx.fillStyle = "#669966";
+        ctx.fillRect(-100, -150, 200, 300);
+        ctx.fillStyle = "#fff";
+        ctx.font = "16px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("add assets/character-front.png", 0, 0);
+      }
+      ctx.restore();
+
+      // Typewriter caption
+      drawCaption(ctx, scene.narration, t);
+
+      if (now - startTime < durationMs) requestAnimationFrame(draw);
+      else recorder.stop();
+    }
+    requestAnimationFrame(draw);
+  });
+}
+
+function drawCaption(ctx, text, t) {
+  const charsToShow = Math.floor(text.length * Math.min(t * 1.4, 1));
+  const shown = text.slice(0, charsToShow);
+  ctx.font = "28px sans-serif";
+  ctx.textAlign = "center";
+  const maxWidth = CANVAS_W - 160;
+  const lines = wrapText(ctx, shown, maxWidth);
+  const boxH = 40 + lines.length * 34;
+  ctx.fillStyle = "rgba(30,26,20,0.72)";
+  roundRect(ctx, 60, CANVAS_H - boxH - 30, CANVAS_W - 120, boxH, 12);
+  ctx.fillStyle = "#fff";
+  lines.forEach((line, i) => {
+    ctx.fillText(line, CANVAS_W / 2, CANVAS_H - boxH - 30 + 40 + i * 34);
+  });
+}
+function wrapText(ctx, text, maxWidth) {
+  const words = text.split(" ");
+  const lines = []; let line = "";
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (ctx.measureText(test).width > maxWidth) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  return lines.slice(-3);
+}
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fill();
+}
+
+document.getElementById("renderAllBtn").onclick = async () => {
+  for (const s of scenes) {
+    await renderScene(s.number);
+  }
+  document.getElementById("assemblePanel").style.display = "block";
+};
+
+// ---------- STEP 3: Audio upload UI (Coqui runs outside browser) ----------
+function buildAudioUploadUI() {
+  const el = document.getElementById("audioUploads");
+  el.innerHTML = "<p class='status'>Optional: upload a narration .wav/.mp3 per scene (from your Coqui XTTS-v2 pipeline).</p>";
+  scenes.forEach(s => {
+    const row = document.createElement("div");
+    row.innerHTML = `<label>Scene ${s.number} audio</label><input type="file" accept="audio/*" id="audio-${s.number}">`;
+    el.appendChild(row);
+  });
+}
+
+// ---------- STEP 4: Assemble with ffmpeg.wasm ----------
+document.getElementById("assembleBtn").onclick = async () => {
+  const statusEl = document.getElementById("assembleStatus");
+  const logEl = document.getElementById("ffmpegLog");
+  logEl.style.display = "block";
+  statusEl.textContent = "Loading ffmpeg.wasm...";
+
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  const ffmpeg = createFFmpeg({
+    log: true,
+    logger: ({ message }) => { logEl.textContent += message + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+  });
+  await ffmpeg.load();
+
+  statusEl.textContent = "Writing scene clips...";
+  const concatList = [];
+  for (const s of scenes) {
+    const clip = sceneClips[s.number];
+    if (!clip) { statusEl.textContent = `Missing rendered clip for scene ${s.number} — render it first.`; return; }
+    const fname = `scene${s.number}.webm`;
+    ffmpeg.FS("writeFile", fname, await fetchFile(clip));
+
+    // attach audio if provided
+    const audioInput = document.getElementById(`audio-${s.number}`);
+    let finalName = fname;
+    if (audioInput && audioInput.files[0]) {
+      const afname = `scene${s.number}.audio`;
+      ffmpeg.FS("writeFile", afname, await fetchFile(audioInput.files[0]));
+      const withAudio = `scene${s.number}_a.mp4`;
+      await ffmpeg.run("-i", fname, "-i", afname, "-c:v", "libx264", "-c:a", "aac",
+        "-shortest", "-pix_fmt", "yuv420p", withAudio);
+      finalName = withAudio;
+    } else {
+      const noAudio = `scene${s.number}_a.mp4`;
+      await ffmpeg.run("-i", fname, "-c:v", "libx264", "-pix_fmt", "yuv420p", noAudio);
+      finalName = noAudio;
+    }
+    concatList.push(finalName);
+  }
+
+  statusEl.textContent = "Concatenating scenes...";
+  const listContent = concatList.map(f => `file '${f}'`).join("\n");
+  ffmpeg.FS("writeFile", "concat.txt", listContent);
+  await ffmpeg.run("-f", "concat", "-safe", "0", "-i", "concat.txt", "-c", "copy", "output.mp4");
+
+  const data = ffmpeg.FS("readFile", "output.mp4");
+  const blob = new Blob([data.buffer], { type: "video/mp4" });
+  const url = URL.createObjectURL(blob);
+
+  const videoEl = document.getElementById("finalVideo");
+  videoEl.src = url;
+  videoEl.style.display = "block";
+  const dl = document.getElementById("downloadLink");
+  dl.href = url;
+  dl.style.display = "inline-block";
+  statusEl.textContent = "Done! Preview and download below.";
+};
+</script>
+</body>
+</html>
