@@ -23,6 +23,7 @@
   .scene-card h3 { margin:0 0 6px 0; font-size:1rem; }
   .scene-meta { font-size:0.8rem; color:#8a7f6c; margin-bottom:6px; }
   .status { font-size:0.85rem; color:#6b6255; margin-top:6px; }
+  .hint { font-size:0.78rem; color:#9a8f7a; margin-top:4px; }
   .log { font-family:monospace; font-size:0.75rem; background:#1e1a14; color:#c9dfb8; padding:10px; border-radius:8px; max-height:160px; overflow:auto; white-space:pre-wrap; }
   audio, video { width:100%; margin-top:6px; }
   .pill { display:inline-block; background:var(--accent); color:white; border-radius:999px; padding:2px 10px; font-size:0.75rem; margin-right:6px; }
@@ -31,11 +32,12 @@
 <body>
 
 <h1>🎬 Mikasan Narrator — Free Script-to-Video</h1>
-<div class="sub">Script → scenes (Groq, free) → procedural 2D character + scenery (canvas, free) → assembled video (ffmpeg.wasm, free). No paid APIs, no image assets.</div>
+<div class="sub">Script → scenes (Groq, free) → anime-style 2D character + scenery (canvas, free) → assembled video with cleaned voiceover (ffmpeg.wasm, free).</div>
 
 <div class="panel">
-  <label>1. Groq API key (free at console.groq.com — kept only in this browser tab)</label>
+  <label>1. Groq API key (free at console.groq.com)</label>
   <input type="password" id="groqKey" placeholder="gsk_...">
+  <div class="hint">Saved automatically in this browser, so you won't need to paste it again here. It only lives on this device/browser.</div>
   <label style="margin-top:14px;">2. Your long script</label>
   <textarea id="script" placeholder="Paste your full story/script here..."></textarea>
   <button id="breakdownBtn">Break into scenes</button>
@@ -50,7 +52,7 @@
 
 <div class="panel" id="assemblePanel" style="display:none;">
   <h2 style="margin-top:0;">4. Assemble final video</h2>
-  <p class="status">Each scene clip is silent (canvas animation only). Upload your Coqui XTTS-v2 narration for each scene below, or skip to preview without audio.</p>
+  <p class="status">Upload your own raw voice recording per scene below — it'll be automatically cleaned (noise reduction + volume normalization) before being mixed in. Leave scenes blank to preview silent.</p>
   <div id="audioUploads"></div>
   <button id="assembleBtn" class="secondary">Build final video</button>
   <div class="status" id="assembleStatus"></div>
@@ -66,25 +68,41 @@
 // ============ CONFIG ============
 const CANVAS_W = 1280, CANVAS_H = 720;
 const BG_COLOR = "#F5E6CC";
+const KEY_STORAGE = "mikasan_groq_key";
 
-// Character palette, matched to the reference sheet
 const PALETTE = {
-  hair: "#161314",
-  hairShine: "#3a3436",
-  skin: "#FFDAB9",
-  blush: "#f5b8a8",
-  hoodie: "#669966",
-  hoodieDark: "#527d52",
-  scarf: "#a8342a",
-  scarfDark: "#8a2a22",
-  skirt: "#1c1a1a",
-  legs: "#1c1a1a",
-  shoes: "#141212",
-  shadow: "rgba(60,50,40,0.18)"
+  hair: "#1c1719",
+  hairLight: "#3d3436",
+  hairShine: "#8a95a6",
+  skin: "#ffe0c2",
+  skinShade: "#f5c9a0",
+  blush: "#ff9d8a",
+  hoodie: "#6fae6a",
+  hoodieLight: "#8fce88",
+  hoodieDark: "#4d8149",
+  scarf: "#c23b2e",
+  scarfLight: "#e05a4a",
+  scarfDark: "#8f2a20",
+  skirt: "#221d1f",
+  legs: "#221d1f",
+  shoes: "#171314",
+  outline: "#181315",
+  eyeWhite: "#ffffff",
+  eyeIris: "#2a2130",
+  shadow: "rgba(60,50,40,0.2)"
 };
 
 let scenes = [];
 let sceneClips = {};
+
+// ============ Persisted API key ============
+window.addEventListener("DOMContentLoaded", () => {
+  const saved = localStorage.getItem(KEY_STORAGE);
+  if (saved) document.getElementById("groqKey").value = saved;
+});
+document.getElementById("groqKey").addEventListener("input", (e) => {
+  localStorage.setItem(KEY_STORAGE, e.target.value.trim());
+});
 
 // ============ STEP 1: Script -> Scenes via Groq ============
 document.getElementById("breakdownBtn").onclick = async () => {
@@ -94,7 +112,7 @@ document.getElementById("breakdownBtn").onclick = async () => {
   if (!key || !script) { statusEl.textContent = "Add your Groq key and a script first."; return; }
   statusEl.textContent = "Breaking script into scenes...";
 
-  const systemPrompt = `You break a narration script into cinematic scenes for a simple 2D chibi cartoon with a single consistent character (a chibi girl: black bob hair, green hoodie, red scarf, black skirt/leggings).
+  const systemPrompt = `You break a narration script into cinematic scenes for a simple anime-chibi 2D cartoon with a single consistent character (a chibi girl: black bob hair, green hoodie, red scarf, black skirt/leggings).
 Return ONLY valid JSON, no markdown fences, no preamble. Schema:
 {"scenes":[{
   "number":1,
@@ -144,7 +162,7 @@ function renderSceneList() {
         <span class="pill">${s.gesture}</span><span class="pill">${s.camera}</span><span class="pill">${s.setting}</span>${s.duration_seconds}s
       </div>
       <div><strong>Action:</strong> ${s.description}</div>
-      <div><strong>Narration (for your voiceover, not burned into video):</strong> "${s.narration}"</div>
+      <div><strong>Narration (read this for your recording):</strong> "${s.narration}"</div>
       <canvas id="canvas-${s.number}" width="${CANVAS_W}" height="${CANVAS_H}"></canvas>
       <button data-scene="${s.number}" class="renderOneBtn">Render this scene's clip</button>
       <video id="video-${s.number}" style="display:none;" controls></video>
@@ -160,8 +178,6 @@ function renderSceneList() {
 }
 
 // ============ POSES ============
-// Angles in radians. 0 = limb hanging straight down from its pivot.
-// Positive rotates the limb's far end outward/forward (canvas rotate() convention applied per-limb).
 function getPose(gesture, t) {
   const idleBob = Math.sin(t * Math.PI * 2 * 1.2) * 4;
   switch (gesture) {
@@ -195,13 +211,13 @@ function getPose(gesture, t) {
     case "look_up":
       return { armL: 0.1, armR: -0.1, legL: 0, legR: 0,
                 headTilt: -0.25, torsoTilt: -0.05, bob: idleBob * 0.4, raise: 0 };
-    default: // idle
+    default:
       return { armL: 0.12, armR: -0.12, legL: 0, legR: 0,
                 headTilt: 0.02, torsoTilt: 0, bob: idleBob, raise: 0 };
   }
 }
 
-// ============ SETTINGS (background scenery) ============
+// ============ SETTINGS ============
 function drawSetting(ctx, setting, t) {
   ctx.fillStyle = BG_COLOR;
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
@@ -267,51 +283,60 @@ function drawSetting(ctx, setting, t) {
       ctx.strokeStyle = "#c9b18f"; ctx.lineWidth = 8;
       ctx.strokeRect(90, 100, 180, 150);
       break;
-    default: // empty — just the flat background, nothing else
+    default:
       break;
   }
 }
 
-// ============ CHARACTER (procedural paper-doll) ============
+// ============ CHARACTER (anime-style paper-doll) ============
 function drawCharacter(ctx, pose) {
-  const scale = 1.0;
   ctx.save();
   ctx.translate(0, pose.bob || 0);
 
-  // ground shadow
   ctx.fillStyle = PALETTE.shadow;
   ctx.beginPath();
   ctx.ellipse(0, 230, 90, 18, 0, 0, Math.PI*2);
   ctx.fill();
 
-  // legs (drawn behind torso)
   drawLimb(ctx, -32, 130, pose.legL || 0, 100, 26, PALETTE.legs, PALETTE.shoes);
   drawLimb(ctx, 32, 130, pose.legR || 0, 100, 26, PALETTE.legs, PALETTE.shoes);
 
-  // torso (hoodie) — simple rounded shape
+  // torso with gradient shading for a cel-shaded look
   ctx.save();
   ctx.rotate(pose.torsoTilt || 0);
-  ctx.fillStyle = PALETTE.hoodie;
+  const torsoGrad = ctx.createLinearGradient(-75, -20, 75, 150);
+  torsoGrad.addColorStop(0, PALETTE.hoodieLight);
+  torsoGrad.addColorStop(0.55, PALETTE.hoodie);
+  torsoGrad.addColorStop(1, PALETTE.hoodieDark);
+  ctx.fillStyle = torsoGrad;
   roundedRect(ctx, -75, -20, 150, 170, 40);
   ctx.fill();
-  // hoodie center seam
+  ctx.lineWidth = 5; ctx.strokeStyle = PALETTE.outline;
+  roundedRect(ctx, -75, -20, 150, 170, 40); ctx.stroke();
+
   ctx.strokeStyle = PALETTE.hoodieDark;
   ctx.lineWidth = 4;
   ctx.beginPath(); ctx.moveTo(0, 5); ctx.lineTo(0, 70); ctx.stroke();
-  // scarf
-  ctx.fillStyle = PALETTE.scarf;
+
+  const scarfGrad = ctx.createLinearGradient(-45,-35,45,10);
+  scarfGrad.addColorStop(0, PALETTE.scarfLight);
+  scarfGrad.addColorStop(1, PALETTE.scarf);
+  ctx.fillStyle = scarfGrad;
   roundedRect(ctx, -45, -35, 90, 45, 18);
   ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = PALETTE.outline;
+  roundedRect(ctx, -45, -35, 90, 45, 18); ctx.stroke();
   ctx.fillStyle = PALETTE.scarfDark;
   ctx.fillRect(-14, 5, 12, 40);
   ctx.fillRect(6, 5, 12, 34);
   ctx.restore();
 
-  // arms (drawn after torso so they sit on top at the shoulders)
   const armPivotY = 10;
   if (pose.crossed) {
     ctx.fillStyle = PALETTE.hoodie;
     roundedRect(ctx, -55, 35, 110, 26, 13); ctx.fill();
+    ctx.lineWidth = 4; ctx.strokeStyle = PALETTE.outline;
+    roundedRect(ctx, -55, 35, 110, 26, 13); ctx.stroke();
   } else {
     drawLimb(ctx, -68, armPivotY, pose.armL || 0, 95, 20, PALETTE.hoodie, PALETTE.skin, true);
     drawLimb(ctx, 68, armPivotY, pose.armR || 0, 95, 20, PALETTE.hoodie, PALETTE.skin, true);
@@ -321,41 +346,92 @@ function drawCharacter(ctx, pose) {
   ctx.save();
   ctx.rotate(pose.headTilt || 0);
   ctx.translate(0, -95);
-  // hair back layer
-  ctx.fillStyle = PALETTE.hair;
+
+  // hair back with gradient
+  const hairGrad = ctx.createRadialGradient(-20,-10,10,0,5,95);
+  hairGrad.addColorStop(0, PALETTE.hairLight);
+  hairGrad.addColorStop(1, PALETTE.hair);
+  ctx.fillStyle = hairGrad;
   ctx.beginPath();
   ctx.ellipse(0, 5, 78, 85, 0, 0, Math.PI*2);
   ctx.fill();
+
   // face
   ctx.fillStyle = PALETTE.skin;
   ctx.beginPath();
   ctx.ellipse(0, 12, 58, 60, 0, 0, Math.PI*2);
   ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = PALETTE.outline;
+  ctx.beginPath();
+  ctx.ellipse(0, 12, 58, 60, 0, 0, Math.PI*2);
+  ctx.stroke();
+
+  // cheek shade
+  ctx.fillStyle = PALETTE.skinShade;
+  ctx.beginPath(); ctx.ellipse(0, 45, 40, 12, 0, 0, Math.PI); ctx.fill();
+
   // blush
   ctx.fillStyle = PALETTE.blush;
-  ctx.beginPath(); ctx.ellipse(-34, 32, 11, 7, 0, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(34, 32, 11, 7, 0, 0, Math.PI*2); ctx.fill();
-  // eyes
-  ctx.fillStyle = "#241f1f";
-  ctx.beginPath(); ctx.ellipse(-22, 14, 7, 10, 0, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(22, 14, 7, 10, 0, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath(); ctx.ellipse(-34, 32, 12, 8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(34, 32, 12, 8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // big anime eyes
+  [-24, 24].forEach(ex => {
+    ctx.fillStyle = PALETTE.eyeWhite;
+    ctx.beginPath(); ctx.ellipse(ex, 14, 13, 17, 0, 0, Math.PI*2); ctx.fill();
+    const irisGrad = ctx.createLinearGradient(ex, 2, ex, 26);
+    irisGrad.addColorStop(0, "#6a5a78");
+    irisGrad.addColorStop(1, PALETTE.eyeIris);
+    ctx.fillStyle = irisGrad;
+    ctx.beginPath(); ctx.ellipse(ex, 15, 10, 14, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#0d0810";
+    ctx.beginPath(); ctx.ellipse(ex, 17, 5, 7, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath(); ctx.ellipse(ex - 4, 9, 3.2, 4.2, -0.3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(ex + 3, 20, 1.6, 2, 0, 0, Math.PI*2); ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = PALETTE.outline;
+    ctx.beginPath(); ctx.ellipse(ex, 14, 13, 17, 0, 0, Math.PI*2); ctx.stroke();
+    // eyebrow
+    ctx.strokeStyle = PALETTE.outline; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(ex - 12, -8);
+    ctx.quadraticCurveTo(ex, -14, ex + 12, -7);
+    ctx.stroke();
+  });
+
+  // small nose mark
+  ctx.strokeStyle = "#d99b78"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, 26); ctx.lineTo(3, 30); ctx.stroke();
+
   // smile
-  ctx.strokeStyle = "#241f1f";
+  ctx.strokeStyle = PALETTE.outline;
   ctx.lineWidth = 3;
   ctx.beginPath(); ctx.arc(0, 34, 12, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
-  // hair front / bangs
-  ctx.fillStyle = PALETTE.hair;
+
+  // hair front / bangs with gradient + outline
+  const bangGrad = ctx.createLinearGradient(-60,-70,60,15);
+  bangGrad.addColorStop(0, PALETTE.hairLight);
+  bangGrad.addColorStop(1, PALETTE.hair);
+  ctx.fillStyle = bangGrad;
   ctx.beginPath();
-  ctx.moveTo(-60, -20);
-  ctx.quadraticCurveTo(0, -70, 60, -20);
-  ctx.quadraticCurveTo(45, 10, 20, -5);
-  ctx.quadraticCurveTo(0, 15, -20, -5);
-  ctx.quadraticCurveTo(-45, 10, -60, -20);
+  ctx.moveTo(-62, -22);
+  ctx.quadraticCurveTo(0, -74, 62, -22);
+  ctx.quadraticCurveTo(46, 12, 20, -6);
+  ctx.quadraticCurveTo(0, 16, -20, -6);
+  ctx.quadraticCurveTo(-46, 12, -62, -22);
   ctx.fill();
-  // hair shine dots
-  ctx.fillStyle = PALETTE.hairShine;
-  ctx.beginPath(); ctx.ellipse(-40, -35, 8, 12, -0.3, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(30, -32, 7, 10, 0.3, 0, Math.PI*2); ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = PALETTE.outline;
+  ctx.stroke();
+
+  // hair shine streaks (cool-toned, classic anime glossy hair)
+  ctx.strokeStyle = PALETTE.hairShine;
+  ctx.globalAlpha = 0.6;
+  ctx.lineWidth = 5; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(-42, -50); ctx.quadraticCurveTo(-38, -20, -30, 10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(28, -46); ctx.quadraticCurveTo(32, -18, 26, 8); ctx.stroke();
+  ctx.globalAlpha = 1;
   ctx.restore();
 
   ctx.restore();
@@ -368,16 +444,27 @@ function drawLimb(ctx, pivotX, pivotY, angle, length, width, colorNear, colorEnd
   ctx.fillStyle = colorNear;
   roundedRect(ctx, -width/2, 0, width, length * 0.72, width/2);
   ctx.fill();
+  ctx.lineWidth = 3.5; ctx.strokeStyle = PALETTE.outline;
+  roundedRect(ctx, -width/2, 0, width, length * 0.72, width/2); ctx.stroke();
+
   ctx.fillStyle = colorEnd;
   ctx.beginPath();
   ctx.ellipse(0, length * 0.72 + width*0.3, width*0.55, width*0.55, 0, 0, Math.PI*2);
   ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = PALETTE.outline;
+  ctx.beginPath();
+  ctx.ellipse(0, length * 0.72 + width*0.3, width*0.55, width*0.55, 0, 0, Math.PI*2);
+  ctx.stroke();
+
   if (!isArm) {
-    // shoe
     ctx.fillStyle = PALETTE.shoes;
     ctx.beginPath();
     ctx.ellipse(6, length * 0.72 + width*0.5, width*0.75, width*0.4, 0, 0, Math.PI*2);
     ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = PALETTE.outline;
+    ctx.beginPath();
+    ctx.ellipse(6, length * 0.72 + width*0.5, width*0.75, width*0.4, 0, 0, Math.PI*2);
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -451,15 +538,15 @@ document.getElementById("renderAllBtn").onclick = async () => {
 // ============ STEP 3: Audio upload UI ============
 function buildAudioUploadUI() {
   const el = document.getElementById("audioUploads");
-  el.innerHTML = "<p class='status'>Optional: upload a narration .wav/.mp3 per scene (from your Coqui XTTS-v2 pipeline).</p>";
+  el.innerHTML = "";
   scenes.forEach(s => {
     const row = document.createElement("div");
-    row.innerHTML = `<label>Scene ${s.number} audio</label><input type="file" accept="audio/*" id="audio-${s.number}">`;
+    row.innerHTML = `<label>Scene ${s.number} voice recording</label><input type="file" accept="audio/*" id="audio-${s.number}">`;
     el.appendChild(row);
   });
 }
 
-// ============ STEP 4: Assemble with ffmpeg.wasm ============
+// ============ STEP 4: Assemble with ffmpeg.wasm (with audio cleanup) ============
 document.getElementById("assembleBtn").onclick = async () => {
   const statusEl = document.getElementById("assembleStatus");
   const logEl = document.getElementById("ffmpegLog");
@@ -484,10 +571,18 @@ document.getElementById("assembleBtn").onclick = async () => {
     const audioInput = document.getElementById(`audio-${s.number}`);
     let finalName;
     if (audioInput && audioInput.files[0]) {
-      const afname = `scene${s.number}.audio`;
-      ffmpeg.FS("writeFile", afname, await fetchFile(audioInput.files[0]));
+      statusEl.textContent = `Cleaning voice recording for scene ${s.number}...`;
+      const rawName = `scene${s.number}_raw.audio`;
+      const cleanName = `scene${s.number}_clean.wav`;
+      ffmpeg.FS("writeFile", rawName, await fetchFile(audioInput.files[0]));
+      // high-pass (remove low rumble) + noise reduction + loudness normalization
+      await ffmpeg.run("-i", rawName, "-af",
+        "highpass=f=80,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11",
+        cleanName);
+
+      statusEl.textContent = `Muxing scene ${s.number}...`;
       finalName = `scene${s.number}_a.mp4`;
-      await ffmpeg.run("-i", fname, "-i", afname, "-c:v", "libx264", "-c:a", "aac",
+      await ffmpeg.run("-i", fname, "-i", cleanName, "-c:v", "libx264", "-c:a", "aac",
         "-shortest", "-pix_fmt", "yuv420p", finalName);
     } else {
       finalName = `scene${s.number}_a.mp4`;
