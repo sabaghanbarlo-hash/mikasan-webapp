@@ -1,1 +1,701 @@
-PLACEHOLDER
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Mikasan Narrator — Free Script-to-Video</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#F5E6CC; --panel:#fffaf2; --accent:#669966; --accent2:#a8342a; --ink:#2b2620; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background:#efe5d5; color:var(--ink); margin:0; padding:24px; }
+  h1 { font-size:1.4rem; margin-bottom:4px; }
+  .sub { color:#6b6255; margin-bottom:20px; font-size:0.9rem; }
+  .panel { background:var(--panel); border-radius:12px; padding:18px; margin-bottom:18px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+  label { display:block; font-weight:600; margin-bottom:6px; font-size:0.9rem; }
+  textarea, input[type=text], input[type=password] { width:100%; padding:10px; border-radius:8px; border:1px solid #d8cdb8; font-family:inherit; font-size:0.9rem; }
+  textarea { min-height:140px; resize:vertical; }
+  button { background:var(--accent); color:white; border:none; padding:10px 16px; border-radius:8px; font-weight:600; cursor:pointer; font-size:0.9rem; margin-top:8px; }
+  button:hover { opacity:0.9; }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  button.secondary { background:var(--accent2); }
+  canvas { border-radius:10px; border:1px solid #d8cdb8; width:100%; max-width:480px; display:block; }
+  .scene-card { border:1px solid #e2d6bd; border-radius:10px; padding:12px; margin-bottom:12px; background:#fffdf7; }
+  .scene-card h3 { margin:0 0 6px 0; font-size:1rem; }
+  .scene-meta { font-size:0.8rem; color:#8a7f6c; margin-bottom:6px; }
+  .status { font-size:0.85rem; color:#6b6255; margin-top:6px; }
+  .hint { font-size:0.78rem; color:#9a8f7a; margin-top:4px; }
+  .log { font-family:monospace; font-size:0.75rem; background:#1e1a14; color:#c9dfb8; padding:10px; border-radius:8px; max-height:160px; overflow:auto; white-space:pre-wrap; }
+  audio, video { width:100%; margin-top:6px; }
+  .pill { display:inline-block; background:var(--accent); color:white; border-radius:999px; padding:2px 10px; font-size:0.75rem; margin-right:6px; }
+</style>
+</head>
+<body>
+
+<h1>🎬 Mikasan Narrator — Free Script-to-Video</h1>
+<div class="sub">Script → scenes (Groq, free) → AI-generated scenery (Pollinations, free) + anime-style 2D character (canvas, free) → assembled video with cleaned voiceover (ffmpeg.wasm, free).</div>
+
+<div class="panel">
+  <label>1. Groq API key (free at console.groq.com)</label>
+  <input type="password" id="groqKey" placeholder="gsk_...">
+  <div class="hint">Saved automatically in this browser, so you won't need to paste it again here. It only lives on this device/browser.</div>
+  <label style="margin-top:14px;">2. Your long script</label>
+  <textarea id="script" placeholder="Paste your full story/script here..."></textarea>
+  <button id="breakdownBtn">Break into scenes</button>
+  <div class="status" id="breakdownStatus"></div>
+</div>
+
+<div class="panel" id="scenesPanel" style="display:none;">
+  <h2 style="margin-top:0;">3. Scenes</h2>
+  <div id="scenesList"></div>
+  <button id="renderAllBtn" style="display:none;">Render all scene animations</button>
+</div>
+
+<div class="panel" id="assemblePanel" style="display:none;">
+  <h2 style="margin-top:0;">4. Assemble final video</h2>
+  <p class="status">Upload your own raw voice recording per scene below — it'll be automatically cleaned (noise reduction + volume normalization) before being mixed in. Leave scenes blank to preview silent.</p>
+  <div id="audioUploads"></div>
+  <button id="assembleBtn" class="secondary">Build final video</button>
+  <div class="status" id="assembleStatus"></div>
+  <div class="log" id="ffmpegLog" style="display:none;"></div>
+  <video id="finalVideo" controls style="display:none; max-width:640px;"></video>
+  <a id="downloadLink" style="display:none;" download="mikasan-narrator-output.mp4">
+    <button style="margin-top:10px;">⬇ Download final video</button>
+  </a>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ffmpeg-wasm/0.12.10/ffmpeg.min.js"></script>
+<script>
+// ============ CONFIG ============
+const CANVAS_W = 1280, CANVAS_H = 720;
+const BG_COLOR = "#F5E6CC";
+const KEY_STORAGE = "mikasan_groq_key";
+
+const PALETTE = {
+  hair: "#1c1719",
+  hairLight: "#3d3436",
+  hairShine: "#8a95a6",
+  skin: "#ffe0c2",
+  skinShade: "#f5c9a0",
+  blush: "#ff9d8a",
+  hoodie: "#6fae6a",
+  hoodieLight: "#8fce88",
+  hoodieDark: "#4d8149",
+  scarf: "#c23b2e",
+  scarfLight: "#e05a4a",
+  scarfDark: "#8f2a20",
+  skirt: "#221d1f",
+  legs: "#221d1f",
+  shoes: "#171314",
+  outline: "#181315",
+  eyeWhite: "#ffffff",
+  eyeIris: "#2a2130",
+  shadow: "rgba(60,50,40,0.2)"
+};
+
+let scenes = [];
+let sceneClips = {};
+let sceneBackgrounds = {}; // scene.number -> loaded Image
+
+// ============ Pollinations (free, no key) background art ============
+const POLLINATIONS_BASE = "https://image.pollinations.ai/prompt/";
+
+function buildBackgroundPrompt(scene) {
+  const settingLookup = {
+    park: "a peaceful public park with trees and a path",
+    city_street: "a clean stylized city street with buildings",
+    cafe: "a cozy warm-lit cafe interior with a window",
+    beach: "a calm sunny beach with soft waves",
+    bedroom: "a cozy tidy bedroom interior with warm light",
+    empty: "a soft plain minimal background"
+  };
+  const base = settingLookup[scene.setting] || settingLookup.empty;
+  return `anime background art, ${base}, ${scene.description || ""}, ` +
+    `flat cel-shaded illustration, soft warm color palette, no characters, no people, no text, wide shot, studio ghibli inspired background`;
+}
+
+// Fetches as a blob first (instead of setting img.src to the URL directly)
+// so the canvas never gets cross-origin "tainted" — this keeps
+// canvas.captureStream()/MediaRecorder working reliably regardless of
+// Pollinations' CORS headers.
+async function loadSceneBackground(scene, statusEl, thumbEl) {
+  const seed = Math.floor(Math.random() * 1000000);
+  const url = `${POLLINATIONS_BASE}${encodeURIComponent(buildBackgroundPrompt(scene))}` +
+    `?width=${CANVAS_W}&height=${CANVAS_H}&seed=${seed}&nologo=true`;
+  if (statusEl) statusEl.textContent = "Generating background...";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = objectUrl;
+    });
+    sceneBackgrounds[scene.number] = img;
+    if (statusEl) statusEl.textContent = "Background ready ✓";
+    if (thumbEl) { thumbEl.src = objectUrl; thumbEl.style.display = "block"; }
+  } catch (err) {
+    if (statusEl) statusEl.textContent = "Background generation failed — using fallback art. (" + err.message + ")";
+  }
+}
+
+async function preloadAllBackgrounds() {
+  await Promise.all(scenes.map(s => {
+    const statusEl = document.getElementById(`bgStatus-${s.number}`);
+    const thumbEl = document.getElementById(`bgThumb-${s.number}`);
+    return loadSceneBackground(s, statusEl, thumbEl);
+  }));
+}
+
+// ============ Persisted API key ============
+window.addEventListener("DOMContentLoaded", () => {
+  const saved = localStorage.getItem(KEY_STORAGE);
+  if (saved) document.getElementById("groqKey").value = saved;
+});
+document.getElementById("groqKey").addEventListener("input", (e) => {
+  localStorage.setItem(KEY_STORAGE, e.target.value.trim());
+});
+
+// ============ STEP 1: Script -> Scenes via Groq ============
+document.getElementById("breakdownBtn").onclick = async () => {
+  const key = document.getElementById("groqKey").value.trim();
+  const script = document.getElementById("script").value.trim();
+  const statusEl = document.getElementById("breakdownStatus");
+  if (!key || !script) { statusEl.textContent = "Add your Groq key and a script first."; return; }
+  statusEl.textContent = "Breaking script into scenes...";
+
+  const systemPrompt = `You break a narration script into cinematic scenes for a simple anime-chibi 2D cartoon with a single consistent character (a chibi girl: black bob hair, green hoodie, red scarf, black skirt/leggings).
+Return ONLY valid JSON, no markdown fences, no preamble. Schema:
+{"scenes":[{
+  "number":1,
+  "description":"...",
+  "narration":"...",
+  "gesture":"one of: idle, wave, point_forward, arms_crossed, shrug, sit, walk, think, cheer, look_up",
+  "camera":"one of: static, slow_zoom_in, slow_zoom_out, pan_left, pan_right",
+  "setting":"one of: empty, park, city_street, cafe, beach, bedroom",
+  "duration_seconds":4
+}]}
+Vary the gesture and setting scene-to-scene to match the action and location described in the script — do not repeat the same gesture for every scene unless the script clearly implies the character is doing the same thing. Keep each scene 3-6 seconds. Narration text should be the exact words spoken in that scene, drawn directly from the script without altering the story.`;
+
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: script }
+        ],
+        temperature: 0.5
+      })
+    });
+    const data = await res.json();
+    let text = data.choices[0].message.content.trim();
+    text = text.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(text);
+    scenes = parsed.scenes;
+    statusEl.textContent = `Got ${scenes.length} scenes. Generating backgrounds...`;
+    renderSceneList();
+    await preloadAllBackgrounds();
+    statusEl.textContent = `Got ${scenes.length} scenes. Backgrounds ready.`;
+  } catch (err) {
+    statusEl.textContent = "Error: " + err.message;
+  }
+};
+
+function renderSceneList() {
+  const list = document.getElementById("scenesList");
+  list.innerHTML = "";
+  scenes.forEach(s => {
+    const card = document.createElement("div");
+    card.className = "scene-card";
+    card.innerHTML = `
+      <h3>Scene ${s.number}</h3>
+      <div class="scene-meta">
+        <span class="pill">${s.gesture}</span><span class="pill">${s.camera}</span><span class="pill">${s.setting}</span>${s.duration_seconds}s
+      </div>
+      <div><strong>Action:</strong> ${s.description}</div>
+      <div><strong>Narration (read this for your recording):</strong> "${s.narration}"</div>
+      <div class="status" id="bgStatus-${s.number}">Waiting to generate background...</div>
+      <img id="bgThumb-${s.number}" style="display:none; max-width:220px; border-radius:8px; border:1px solid #d8cdb8; margin-bottom:6px;">
+      <button data-scene="${s.number}" class="regenBtn secondary" style="margin-right:8px;">🔄 New background</button>
+      <canvas id="canvas-${s.number}" width="${CANVAS_W}" height="${CANVAS_H}"></canvas>
+      <button data-scene="${s.number}" class="renderOneBtn">Render this scene's clip</button>
+      <video id="video-${s.number}" style="display:none;" controls></video>
+    `;
+    list.appendChild(card);
+  });
+  document.getElementById("scenesPanel").style.display = "block";
+  document.getElementById("renderAllBtn").style.display = "inline-block";
+  document.querySelectorAll(".renderOneBtn").forEach(btn => {
+    btn.onclick = () => renderScene(parseInt(btn.dataset.scene));
+  });
+  document.querySelectorAll(".regenBtn").forEach(btn => {
+    btn.onclick = () => {
+      const num = parseInt(btn.dataset.scene);
+      const scene = scenes.find(s => s.number === num);
+      loadSceneBackground(scene, document.getElementById(`bgStatus-${num}`), document.getElementById(`bgThumb-${num}`));
+    };
+  });
+  buildAudioUploadUI();
+}
+
+// ============ POSES ============
+function getPose(gesture, t) {
+  const idleBob = Math.sin(t * Math.PI * 2 * 1.2) * 4;
+  switch (gesture) {
+    case "wave":
+      return { armL: 0.15, armR: -2.3 + Math.sin(t * Math.PI * 8) * 0.35, legL: 0.05, legR: -0.05,
+                headTilt: 0.03, torsoTilt: 0, bob: idleBob * 0.5, raise: 0 };
+    case "point_forward":
+      return { armL: 0.1, armR: -1.55, legL: 0, legR: 0,
+                headTilt: 0, torsoTilt: 0.02, bob: idleBob * 0.3, raise: 0 };
+    case "arms_crossed":
+      return { armL: 0.9, armR: -0.9, legL: 0.03, legR: -0.03,
+                headTilt: -0.02, torsoTilt: 0, bob: idleBob * 0.3, raise: 0, crossed: true };
+    case "shrug":
+      return { armL: 0.6 + Math.sin(t*Math.PI*3)*0.08, armR: -0.6 - Math.sin(t*Math.PI*3)*0.08,
+                legL: 0, legR: 0, headTilt: 0, torsoTilt: 0,
+                bob: -Math.abs(Math.sin(t * Math.PI * 2)) * 6, raise: 0 };
+    case "sit":
+      return { armL: 0.25, armR: -0.25, legL: 1.3, legR: -1.3,
+                headTilt: 0, torsoTilt: 0, bob: 60, raise: 0, sit: true };
+    case "walk":
+      const cyc = Math.sin(t * Math.PI * 6);
+      return { armL: 0.4 * cyc, armR: -0.4 * cyc, legL: 0.5 * cyc, legR: -0.5 * cyc,
+                headTilt: 0, torsoTilt: 0.02 * cyc, bob: Math.abs(cyc) * 3, raise: 0 };
+    case "think":
+      return { armL: 0.15, armR: -2.0, legL: 0, legR: 0,
+                headTilt: 0.12, torsoTilt: -0.03, bob: idleBob * 0.3, raise: 0 };
+    case "cheer":
+      return { armL: 2.6 + Math.sin(t*Math.PI*6)*0.1, armR: -2.6 - Math.sin(t*Math.PI*6)*0.1,
+                legL: 0.1, legR: -0.1, headTilt: 0, torsoTilt: 0,
+                bob: -Math.abs(Math.sin(t * Math.PI * 3)) * 8, raise: 0 };
+    case "look_up":
+      return { armL: 0.1, armR: -0.1, legL: 0, legR: 0,
+                headTilt: -0.25, torsoTilt: -0.05, bob: idleBob * 0.4, raise: 0 };
+    default:
+      return { armL: 0.12, armR: -0.12, legL: 0, legR: 0,
+                headTilt: 0.02, torsoTilt: 0, bob: idleBob, raise: 0 };
+  }
+}
+
+// ============ SETTINGS ============
+// Draws the AI-generated Pollinations image for this scene, cover-fit to
+// the canvas. Falls back to the old hand-drawn shapes if the background
+// hasn't finished generating yet (e.g. first frame or a slow connection).
+function drawSetting(ctx, scene, t) {
+  const img = sceneBackgrounds[scene.number];
+  if (img) {
+    const imgRatio = img.width / img.height;
+    const canvasRatio = CANVAS_W / CANVAS_H;
+    let drawW, drawH, dx, dy;
+    if (imgRatio > canvasRatio) {
+      drawH = CANVAS_H; drawW = drawH * imgRatio;
+      dx = (CANVAS_W - drawW) / 2; dy = 0;
+    } else {
+      drawW = CANVAS_W; drawH = drawW / imgRatio;
+      dx = 0; dy = (CANVAS_H - drawH) / 2;
+    }
+    ctx.drawImage(img, dx, dy, drawW, drawH);
+  } else {
+    drawSettingFallback(ctx, scene.setting, t);
+  }
+}
+
+function drawSettingFallback(ctx, setting, t) {
+  ctx.fillStyle = BG_COLOR;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  const groundY = CANVAS_H - 110;
+
+  function tree(x, y, scale) {
+    ctx.fillStyle = "#8a6a4a";
+    ctx.fillRect(x - 8*scale, y - 60*scale, 16*scale, 70*scale);
+    ctx.fillStyle = "#5f8f5a";
+    ctx.beginPath();
+    ctx.ellipse(x, y - 90*scale, 55*scale, 60*scale, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  switch (setting) {
+    case "park":
+      ctx.fillStyle = "#8fb583";
+      ctx.fillRect(0, groundY, CANVAS_W, CANVAS_H - groundY);
+      tree(140, groundY, 1);
+      tree(1150, groundY, 1.15);
+      tree(260, groundY, 0.7);
+      ctx.fillStyle = "#f4d35e";
+      ctx.beginPath(); ctx.arc(1120, 110, 42, 0, Math.PI*2); ctx.fill();
+      break;
+    case "city_street":
+      ctx.fillStyle = "#8f8f96";
+      ctx.fillRect(0, groundY, CANVAS_W, CANVAS_H - groundY);
+      ctx.fillStyle = "#d8d3c4";
+      for (let i=0;i<5;i++){
+        const bw = 130, bx = 60 + i*230, bh = 220 + (i%3)*60;
+        ctx.fillRect(bx, groundY - bh, bw, bh);
+        ctx.fillStyle = "#f5e6cc";
+        for (let wy=0; wy<bh-30; wy+=45) for (let wx=0; wx<bw-25; wx+=40)
+          ctx.fillRect(bx+15+wx, groundY-bh+20+wy, 18, 24);
+        ctx.fillStyle = "#d8d3c4";
+      }
+      break;
+    case "cafe":
+      ctx.fillStyle = "#e7c9a0";
+      ctx.fillRect(0, groundY, CANVAS_W, CANVAS_H - groundY);
+      ctx.fillStyle = "#7a4f30";
+      ctx.fillRect(CANVAS_W/2 - 90, groundY - 40, 180, 40);
+      ctx.fillStyle = "#c9dbe0";
+      ctx.fillRect(120, 90, 220, 160);
+      ctx.strokeStyle = "#7a4f30"; ctx.lineWidth = 8;
+      ctx.strokeRect(120, 90, 220, 160);
+      break;
+    case "beach":
+      ctx.fillStyle = "#bfe3e0";
+      ctx.fillRect(0, 0, CANVAS_W, groundY - 60);
+      ctx.fillStyle = "#f0e0a8";
+      ctx.fillRect(0, groundY - 60, CANVAS_W, CANVAS_H - groundY + 60);
+      ctx.fillStyle = "#f4d35e";
+      ctx.beginPath(); ctx.arc(1100, 100, 46, 0, Math.PI*2); ctx.fill();
+      break;
+    case "bedroom":
+      ctx.fillStyle = "#e9dcc4";
+      ctx.fillRect(0, groundY, CANVAS_W, CANVAS_H - groundY);
+      ctx.fillStyle = "#c9b18f";
+      ctx.fillRect(950, groundY - 130, 260, 130);
+      ctx.fillStyle = "#f5e6cc";
+      ctx.fillRect(90, 100, 180, 150);
+      ctx.strokeStyle = "#c9b18f"; ctx.lineWidth = 8;
+      ctx.strokeRect(90, 100, 180, 150);
+      break;
+    default:
+      break;
+  }
+}
+
+// ============ CHARACTER (anime-style paper-doll) ============
+function drawCharacter(ctx, pose) {
+  ctx.save();
+  ctx.translate(0, pose.bob || 0);
+
+  ctx.fillStyle = PALETTE.shadow;
+  ctx.beginPath();
+  ctx.ellipse(0, 230, 90, 18, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  drawLimb(ctx, -32, 130, pose.legL || 0, 100, 26, PALETTE.legs, PALETTE.shoes);
+  drawLimb(ctx, 32, 130, pose.legR || 0, 100, 26, PALETTE.legs, PALETTE.shoes);
+
+  // torso with gradient shading for a cel-shaded look
+  ctx.save();
+  ctx.rotate(pose.torsoTilt || 0);
+  const torsoGrad = ctx.createLinearGradient(-75, -20, 75, 150);
+  torsoGrad.addColorStop(0, PALETTE.hoodieLight);
+  torsoGrad.addColorStop(0.55, PALETTE.hoodie);
+  torsoGrad.addColorStop(1, PALETTE.hoodieDark);
+  ctx.fillStyle = torsoGrad;
+  roundedRect(ctx, -75, -20, 150, 170, 40);
+  ctx.fill();
+  ctx.lineWidth = 5; ctx.strokeStyle = PALETTE.outline;
+  roundedRect(ctx, -75, -20, 150, 170, 40); ctx.stroke();
+
+  ctx.strokeStyle = PALETTE.hoodieDark;
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(0, 5); ctx.lineTo(0, 70); ctx.stroke();
+
+  const scarfGrad = ctx.createLinearGradient(-45,-35,45,10);
+  scarfGrad.addColorStop(0, PALETTE.scarfLight);
+  scarfGrad.addColorStop(1, PALETTE.scarf);
+  ctx.fillStyle = scarfGrad;
+  roundedRect(ctx, -45, -35, 90, 45, 18);
+  ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = PALETTE.outline;
+  roundedRect(ctx, -45, -35, 90, 45, 18); ctx.stroke();
+  ctx.fillStyle = PALETTE.scarfDark;
+  ctx.fillRect(-14, 5, 12, 40);
+  ctx.fillRect(6, 5, 12, 34);
+  ctx.restore();
+
+  const armPivotY = 10;
+  if (pose.crossed) {
+    ctx.fillStyle = PALETTE.hoodie;
+    roundedRect(ctx, -55, 35, 110, 26, 13); ctx.fill();
+    ctx.lineWidth = 4; ctx.strokeStyle = PALETTE.outline;
+    roundedRect(ctx, -55, 35, 110, 26, 13); ctx.stroke();
+  } else {
+    drawLimb(ctx, -68, armPivotY, pose.armL || 0, 95, 20, PALETTE.hoodie, PALETTE.skin, true);
+    drawLimb(ctx, 68, armPivotY, pose.armR || 0, 95, 20, PALETTE.hoodie, PALETTE.skin, true);
+  }
+
+  // head
+  ctx.save();
+  ctx.rotate(pose.headTilt || 0);
+  ctx.translate(0, -95);
+
+  // hair back with gradient
+  const hairGrad = ctx.createRadialGradient(-20,-10,10,0,5,95);
+  hairGrad.addColorStop(0, PALETTE.hairLight);
+  hairGrad.addColorStop(1, PALETTE.hair);
+  ctx.fillStyle = hairGrad;
+  ctx.beginPath();
+  ctx.ellipse(0, 5, 78, 85, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // face
+  ctx.fillStyle = PALETTE.skin;
+  ctx.beginPath();
+  ctx.ellipse(0, 12, 58, 60, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = PALETTE.outline;
+  ctx.beginPath();
+  ctx.ellipse(0, 12, 58, 60, 0, 0, Math.PI*2);
+  ctx.stroke();
+
+  // cheek shade
+  ctx.fillStyle = PALETTE.skinShade;
+  ctx.beginPath(); ctx.ellipse(0, 45, 40, 12, 0, 0, Math.PI); ctx.fill();
+
+  // blush
+  ctx.fillStyle = PALETTE.blush;
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath(); ctx.ellipse(-34, 32, 12, 8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(34, 32, 12, 8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // big anime eyes
+  [-24, 24].forEach(ex => {
+    ctx.fillStyle = PALETTE.eyeWhite;
+    ctx.beginPath(); ctx.ellipse(ex, 14, 13, 17, 0, 0, Math.PI*2); ctx.fill();
+    const irisGrad = ctx.createLinearGradient(ex, 2, ex, 26);
+    irisGrad.addColorStop(0, "#6a5a78");
+    irisGrad.addColorStop(1, PALETTE.eyeIris);
+    ctx.fillStyle = irisGrad;
+    ctx.beginPath(); ctx.ellipse(ex, 15, 10, 14, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#0d0810";
+    ctx.beginPath(); ctx.ellipse(ex, 17, 5, 7, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath(); ctx.ellipse(ex - 4, 9, 3.2, 4.2, -0.3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(ex + 3, 20, 1.6, 2, 0, 0, Math.PI*2); ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = PALETTE.outline;
+    ctx.beginPath(); ctx.ellipse(ex, 14, 13, 17, 0, 0, Math.PI*2); ctx.stroke();
+    // eyebrow
+    ctx.strokeStyle = PALETTE.outline; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(ex - 12, -8);
+    ctx.quadraticCurveTo(ex, -14, ex + 12, -7);
+    ctx.stroke();
+  });
+
+  // small nose mark
+  ctx.strokeStyle = "#d99b78"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, 26); ctx.lineTo(3, 30); ctx.stroke();
+
+  // smile
+  ctx.strokeStyle = PALETTE.outline;
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(0, 34, 12, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
+
+  // hair front / bangs with gradient + outline
+  const bangGrad = ctx.createLinearGradient(-60,-70,60,15);
+  bangGrad.addColorStop(0, PALETTE.hairLight);
+  bangGrad.addColorStop(1, PALETTE.hair);
+  ctx.fillStyle = bangGrad;
+  ctx.beginPath();
+  ctx.moveTo(-62, -22);
+  ctx.quadraticCurveTo(0, -74, 62, -22);
+  ctx.quadraticCurveTo(46, 12, 20, -6);
+  ctx.quadraticCurveTo(0, 16, -20, -6);
+  ctx.quadraticCurveTo(-46, 12, -62, -22);
+  ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = PALETTE.outline;
+  ctx.stroke();
+
+  // hair shine streaks (cool-toned, classic anime glossy hair)
+  ctx.strokeStyle = PALETTE.hairShine;
+  ctx.globalAlpha = 0.6;
+  ctx.lineWidth = 5; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(-42, -50); ctx.quadraticCurveTo(-38, -20, -30, 10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(28, -46); ctx.quadraticCurveTo(32, -18, 26, 8); ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawLimb(ctx, pivotX, pivotY, angle, length, width, colorNear, colorEnd, isArm) {
+  ctx.save();
+  ctx.translate(pivotX, pivotY);
+  ctx.rotate(angle);
+  ctx.fillStyle = colorNear;
+  roundedRect(ctx, -width/2, 0, width, length * 0.72, width/2);
+  ctx.fill();
+  ctx.lineWidth = 3.5; ctx.strokeStyle = PALETTE.outline;
+  roundedRect(ctx, -width/2, 0, width, length * 0.72, width/2); ctx.stroke();
+
+  ctx.fillStyle = colorEnd;
+  ctx.beginPath();
+  ctx.ellipse(0, length * 0.72 + width*0.3, width*0.55, width*0.55, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = PALETTE.outline;
+  ctx.beginPath();
+  ctx.ellipse(0, length * 0.72 + width*0.3, width*0.55, width*0.55, 0, 0, Math.PI*2);
+  ctx.stroke();
+
+  if (!isArm) {
+    ctx.fillStyle = PALETTE.shoes;
+    ctx.beginPath();
+    ctx.ellipse(6, length * 0.72 + width*0.5, width*0.75, width*0.4, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = PALETTE.outline;
+    ctx.beginPath();
+    ctx.ellipse(6, length * 0.72 + width*0.5, width*0.75, width*0.4, 0, 0, Math.PI*2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function roundedRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// ============ STEP 2: Render scene to video ============
+function renderScene(num) {
+  return new Promise((resolve) => {
+    const scene = scenes.find(s => s.number === num);
+    const canvas = document.getElementById(`canvas-${num}`);
+    const ctx = canvas.getContext("2d");
+    const stream = canvas.captureStream(30);
+    const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9" });
+    const chunks = [];
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: "video/webm" });
+      sceneClips[num] = blob;
+      const vidEl = document.getElementById(`video-${num}`);
+      vidEl.src = URL.createObjectURL(blob);
+      vidEl.style.display = "block";
+      resolve();
+    };
+
+    const durationMs = (scene.duration_seconds || 4) * 1000;
+    const startTime = performance.now();
+    recorder.start();
+
+    function draw(now) {
+      const t = (now - startTime) / durationMs;
+
+      drawSetting(ctx, scene, t);
+
+      let camScale = 1, camX = 0;
+      if (scene.camera === "slow_zoom_in") camScale = 1 + 0.08 * t;
+      if (scene.camera === "slow_zoom_out") camScale = 1.08 - 0.08 * t;
+      if (scene.camera === "pan_left") camX = -40 * t;
+      if (scene.camera === "pan_right") camX = 40 * t;
+
+      const pose = getPose(scene.gesture, t);
+
+      ctx.save();
+      ctx.translate(CANVAS_W / 2 + camX, CANVAS_H / 2 + 60 + (pose.sit ? 40 : 0));
+      ctx.scale(camScale, camScale);
+      drawCharacter(ctx, pose);
+      ctx.restore();
+
+      if (now - startTime < durationMs) requestAnimationFrame(draw);
+      else recorder.stop();
+    }
+    requestAnimationFrame(draw);
+  });
+}
+
+document.getElementById("renderAllBtn").onclick = async () => {
+  for (const s of scenes) {
+    await renderScene(s.number);
+  }
+  document.getElementById("assemblePanel").style.display = "block";
+};
+
+// ============ STEP 3: Audio upload UI ============
+function buildAudioUploadUI() {
+  const el = document.getElementById("audioUploads");
+  el.innerHTML = "";
+  scenes.forEach(s => {
+    const row = document.createElement("div");
+    row.innerHTML = `<label>Scene ${s.number} voice recording</label><input type="file" accept="audio/*" id="audio-${s.number}">`;
+    el.appendChild(row);
+  });
+}
+
+// ============ STEP 4: Assemble with ffmpeg.wasm (with audio cleanup) ============
+document.getElementById("assembleBtn").onclick = async () => {
+  const statusEl = document.getElementById("assembleStatus");
+  const logEl = document.getElementById("ffmpegLog");
+  logEl.style.display = "block";
+  statusEl.textContent = "Loading ffmpeg.wasm...";
+
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  const ffmpeg = createFFmpeg({
+    log: true,
+    logger: ({ message }) => { logEl.textContent += message + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+  });
+  await ffmpeg.load();
+
+  statusEl.textContent = "Writing scene clips...";
+  const concatList = [];
+  for (const s of scenes) {
+    const clip = sceneClips[s.number];
+    if (!clip) { statusEl.textContent = `Missing rendered clip for scene ${s.number} — render it first.`; return; }
+    const fname = `scene${s.number}.webm`;
+    ffmpeg.FS("writeFile", fname, await fetchFile(clip));
+
+    const audioInput = document.getElementById(`audio-${s.number}`);
+    let finalName;
+    if (audioInput && audioInput.files[0]) {
+      statusEl.textContent = `Cleaning voice recording for scene ${s.number}...`;
+      const rawName = `scene${s.number}_raw.audio`;
+      const cleanName = `scene${s.number}_clean.wav`;
+      ffmpeg.FS("writeFile", rawName, await fetchFile(audioInput.files[0]));
+      // high-pass (remove low rumble) + noise reduction + loudness normalization
+      await ffmpeg.run("-i", rawName, "-af",
+        "highpass=f=80,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11",
+        cleanName);
+
+      statusEl.textContent = `Muxing scene ${s.number}...`;
+      finalName = `scene${s.number}_a.mp4`;
+      await ffmpeg.run("-i", fname, "-i", cleanName, "-c:v", "libx264", "-c:a", "aac",
+        "-shortest", "-pix_fmt", "yuv420p", finalName);
+    } else {
+      finalName = `scene${s.number}_a.mp4`;
+      await ffmpeg.run("-i", fname, "-c:v", "libx264", "-pix_fmt", "yuv420p", finalName);
+    }
+    concatList.push(finalName);
+  }
+
+  statusEl.textContent = "Concatenating scenes...";
+  const listContent = concatList.map(f => `file '${f}'`).join("\n");
+  ffmpeg.FS("writeFile", "concat.txt", listContent);
+  await ffmpeg.run("-f", "concat", "-safe", "0", "-i", "concat.txt", "-c", "copy", "output.mp4");
+
+  const data = ffmpeg.FS("readFile", "output.mp4");
+  const blob = new Blob([data.buffer], { type: "video/mp4" });
+  const url = URL.createObjectURL(blob);
+
+  const videoEl = document.getElementById("finalVideo");
+  videoEl.src = url;
+  videoEl.style.display = "block";
+  const dl = document.getElementById("downloadLink");
+  dl.href = url;
+  dl.style.display = "inline-block";
+  statusEl.textContent = "Done! Preview and download below.";
+};
+</script>
+</body>
+</html>
