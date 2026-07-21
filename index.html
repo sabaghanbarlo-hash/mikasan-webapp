@@ -5,28 +5,29 @@
 <title>Mikasan Narrator — Free Script-to-Video</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { --bg:#F5E6CC; --panel:#fffaf2; --accent:#669966; --accent2:#a8342a; --ink:#2b2620; }
+  :root { --bg:#181614; --panel:#232019; --accent:#7cbb74; --accent2:#e0574a; --ink:#ede7dc; }
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Segoe UI", sans-serif; background:#efe5d5; color:var(--ink); margin:0; padding:24px; }
-  h1 { font-size:1.4rem; margin-bottom:4px; }
-  .sub { color:#6b6255; margin-bottom:20px; font-size:0.9rem; }
-  .panel { background:var(--panel); border-radius:12px; padding:18px; margin-bottom:18px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
-  label { display:block; font-weight:600; margin-bottom:6px; font-size:0.9rem; }
-  textarea, input[type=text], input[type=password] { width:100%; padding:10px; border-radius:8px; border:1px solid #d8cdb8; font-family:inherit; font-size:0.9rem; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); margin:0; padding:24px; }
+  h1 { font-size:1.4rem; margin-bottom:4px; color:var(--ink); }
+  .sub { color:#a89e8c; margin-bottom:20px; font-size:0.9rem; }
+  .panel { background:var(--panel); border-radius:12px; padding:18px; margin-bottom:18px; box-shadow:0 1px 4px rgba(0,0,0,0.4); border:1px solid #34302a; }
+  label { display:block; font-weight:600; margin-bottom:6px; font-size:0.9rem; color:var(--ink); }
+  textarea, input[type=text], input[type=password] { width:100%; padding:10px; border-radius:8px; border:1px solid #45403a; background:#141210; color:var(--ink); font-family:inherit; font-size:0.9rem; }
+  textarea::placeholder, input::placeholder { color:#7a7268; }
   textarea { min-height:140px; resize:vertical; }
-  button { background:var(--accent); color:white; border:none; padding:10px 16px; border-radius:8px; font-weight:600; cursor:pointer; font-size:0.9rem; margin-top:8px; }
-  button:hover { opacity:0.9; }
-  button:disabled { opacity:0.5; cursor:not-allowed; }
-  button.secondary { background:var(--accent2); }
-  canvas { border-radius:10px; border:1px solid #d8cdb8; width:100%; max-width:480px; display:block; }
-  .scene-card { border:1px solid #e2d6bd; border-radius:10px; padding:12px; margin-bottom:12px; background:#fffdf7; }
-  .scene-card h3 { margin:0 0 6px 0; font-size:1rem; }
-  .scene-meta { font-size:0.8rem; color:#8a7f6c; margin-bottom:6px; }
-  .status { font-size:0.85rem; color:#6b6255; margin-top:6px; }
-  .hint { font-size:0.78rem; color:#9a8f7a; margin-top:4px; }
-  .log { font-family:monospace; font-size:0.75rem; background:#1e1a14; color:#c9dfb8; padding:10px; border-radius:8px; max-height:160px; overflow:auto; white-space:pre-wrap; }
+  button { background:var(--accent); color:#12160f; border:none; padding:10px 16px; border-radius:8px; font-weight:600; cursor:pointer; font-size:0.9rem; margin-top:8px; }
+  button:hover { opacity:0.88; }
+  button:disabled { opacity:0.4; cursor:not-allowed; }
+  button.secondary { background:var(--accent2); color:#1a0d0a; }
+  canvas { border-radius:10px; border:1px solid #45403a; width:100%; max-width:480px; display:block; background:#000; }
+  .scene-card { border:1px solid #3a352d; border-radius:10px; padding:12px; margin-bottom:12px; background:#1c1a15; }
+  .scene-card h3 { margin:0 0 6px 0; font-size:1rem; color:var(--ink); }
+  .scene-meta { font-size:0.8rem; color:#9a8f7a; margin-bottom:6px; }
+  .status { font-size:0.85rem; color:#a89e8c; margin-top:6px; }
+  .hint { font-size:0.78rem; color:#7a7268; margin-top:4px; }
+  .log { font-family:monospace; font-size:0.75rem; background:#0e0c0a; color:#a8d99a; padding:10px; border-radius:8px; max-height:160px; overflow:auto; white-space:pre-wrap; border:1px solid #34302a; }
   audio, video { width:100%; margin-top:6px; }
-  .pill { display:inline-block; background:var(--accent); color:white; border-radius:999px; padding:2px 10px; font-size:0.75rem; margin-right:6px; }
+  .pill { display:inline-block; background:var(--accent); color:#12160f; border-radius:999px; padding:2px 10px; font-size:0.75rem; margin-right:6px; }
 </style>
 </head>
 <body>
@@ -67,7 +68,7 @@
 <script>
 // ============ CONFIG ============
 const CANVAS_W = 1280, CANVAS_H = 720;
-const BG_COLOR = "#F5E6CC";
+const BG_COLOR = "#1c1a15";
 const KEY_STORAGE = "mikasan_groq_key";
 
 const PALETTE = {
@@ -395,31 +396,33 @@ function drawSettingFallback(ctx, setting, t) {
 // character always looks exactly like the reference art, every scene.
 // ============ CHARACTER (real anime-style art, one image per pose) ============
 // Instead of animating a single flat image, we generate one real AI image
-// PER GESTURE (wave, point, sit, walk, etc.), each produced as an
-// image-to-image variation of your uploaded reference art so the design
-// (black bob hair, green hoodie, red scarf) stays consistent across poses.
-// We then swap between these pose images during playback, with a small
-// bob/lean layered on top for a touch of life.
-const CHARACTER_REF_URL = "https://raw.githubusercontent.com/sabaghanbarlo-hash/mikasan-webapp/main/assets/character.png";
+// PER GESTURE (wave, point, sit, walk, etc.). Note: an earlier version tried
+// image-to-image using your uploaded photo as a reference, but that route
+// was unreliable (it sometimes dropped the character entirely). This uses
+// plain, reliable text-to-image with a strong "single character, plain
+// background" description instead — the same method that already works
+// well for the scene backgrounds.
 let poseSprites = {}; // gesture name -> loaded Image
 
 const POSE_PROMPTS = {
-  idle: "same character standing relaxed, hands together in front, gentle smile, full body, plain background",
-  wave: "same character waving one hand energetically above shoulder, big smile, full body, plain background",
-  point_forward: "same character pointing forward with one arm extended, determined expression, full body, plain background",
-  arms_crossed: "same character with both arms crossed over chest, confident pose, full body, plain background",
-  shrug: "same character shrugging shoulders with both hands raised palms up, playful confused expression, full body, plain background",
-  sit: "same character sitting cross-legged on the ground, relaxed pose, full body, plain background",
-  walk: "same character mid-stride walking, one arm swinging forward, dynamic pose, full body, plain background",
-  think: "same character with one hand on chin, thoughtful pose, looking up slightly, full body, plain background",
-  cheer: "same character cheering with both arms raised up in victory, joyful expression, full body, plain background",
-  look_up: "same character looking upward with hopeful expression, hands clasped, full body, plain background"
+  idle: "standing relaxed, hands together in front, gentle smile",
+  wave: "waving one hand energetically above shoulder, big smile",
+  point_forward: "pointing forward with one arm extended, determined expression",
+  arms_crossed: "both arms crossed over chest, confident pose",
+  shrug: "shrugging shoulders with both hands raised palms up, playful confused expression",
+  sit: "sitting cross-legged on the ground, relaxed pose",
+  walk: "mid-stride walking pose, one arm swinging forward, dynamic",
+  think: "one hand on chin, thoughtful pose, looking up slightly",
+  cheer: "cheering with both arms raised up in victory, joyful expression",
+  look_up: "looking upward with hopeful expression, hands clasped"
 };
 
 function buildPosePrompt(gesture) {
   const base = POSE_PROMPTS[gesture] || POSE_PROMPTS.idle;
-  return `anime chibi girl, black bob hair, green hoodie, red scarf, black skirt and leggings, ` +
-    `${base}, flat cel-shaded illustration, clean linework, no background details, transparent-friendly plain backdrop`;
+  return `single anime chibi girl character, full body, centered, ${base}, ` +
+    `black bob haircut, black bangs, large anime eyes, green hoodie with drawstrings, red knit scarf, ` +
+    `black skirt over black leggings, black shoes, flat cel-shaded illustration, clean bold linework, ` +
+    `solid plain white background, no scenery, no props, no other characters, character reference sheet style`;
 }
 
 // Fetches as a blob (same trick as backgrounds) so the canvas recording
@@ -427,7 +430,7 @@ function buildPosePrompt(gesture) {
 async function loadPoseSprite(gesture, statusEl) {
   const seed = Math.floor(Math.random() * 1000000);
   const url = `${POLLINATIONS_BASE}${encodeURIComponent(buildPosePrompt(gesture))}` +
-    `?image=${encodeURIComponent(CHARACTER_REF_URL)}&model=nanobanana&width=600&height=900&seed=${seed}&nologo=true`;
+    `?width=600&height=900&seed=${seed}&nologo=true`;
   if (statusEl) statusEl.textContent = "Generating pose...";
   try {
     const res = await fetch(url);
