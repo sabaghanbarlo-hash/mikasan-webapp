@@ -100,6 +100,37 @@ let sceneBackgrounds = {}; // scene.number -> loaded Image
 // ============ Pollinations (free, no key) background art ============
 const POLLINATIONS_BASE = "https://image.pollinations.ai/prompt/";
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Free image APIs like this one rate-limit aggressively under concurrent
+// load. fetchWithRetry backs off and retries; runThrottled caps how many
+// generations are in flight at once instead of firing them all together.
+async function fetchWithRetry(url, retries = 3, backoffMs = 2000) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res;
+    } catch (err) {
+      if (attempt === retries) throw err;
+      await sleep(backoffMs * (attempt + 1));
+    }
+  }
+}
+
+async function runThrottled(items, worker, concurrency = 2, staggerMs = 600) {
+  let index = 0;
+  async function runOne() {
+    while (index < items.length) {
+      const i = index++;
+      await worker(items[i]);
+      await sleep(staggerMs);
+    }
+  }
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, runOne);
+  await Promise.all(runners);
+}
+
 function buildBackgroundPrompt(scene) {
   const settingLookup = {
     park: "a peaceful public park with trees and a path",
@@ -124,8 +155,7 @@ async function loadSceneBackground(scene, statusEl, thumbEl) {
     `?width=${CANVAS_W}&height=${CANVAS_H}&seed=${seed}&nologo=true`;
   if (statusEl) statusEl.textContent = "Generating background...";
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const res = await fetchWithRetry(url);
     const blob = await res.blob();
     const objectUrl = URL.createObjectURL(blob);
     const img = new Image();
@@ -143,11 +173,11 @@ async function loadSceneBackground(scene, statusEl, thumbEl) {
 }
 
 async function preloadAllBackgrounds() {
-  await Promise.all(scenes.map(s => {
+  await runThrottled(scenes, s => {
     const statusEl = document.getElementById(`bgStatus-${s.number}`);
     const thumbEl = document.getElementById(`bgThumb-${s.number}`);
     return loadSceneBackground(s, statusEl, thumbEl);
-  }));
+  });
 }
 
 // ============ Persisted API key ============
@@ -200,7 +230,9 @@ Vary the gesture and setting scene-to-scene to match the action and location des
     scenes = parsed.scenes;
     statusEl.textContent = `Got ${scenes.length} scenes. Generating backgrounds...`;
     renderSceneList();
-    await Promise.all([preloadAllBackgrounds(), preloadAllPoses()]);
+    await preloadAllBackgrounds();
+    statusEl.textContent = `Got ${scenes.length} scenes. Backgrounds ready. Generating poses...`;
+    await preloadAllPoses();
     statusEl.textContent = `Got ${scenes.length} scenes. Backgrounds ready.`;
   } catch (err) {
     statusEl.textContent = "Error: " + err.message;
@@ -433,8 +465,7 @@ async function loadPoseSprite(gesture, statusEl) {
     `?width=600&height=900&seed=${seed}&nologo=true`;
   if (statusEl) statusEl.textContent = "Generating pose...";
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const res = await fetchWithRetry(url);
     const blob = await res.blob();
     const objectUrl = URL.createObjectURL(blob);
     const img = new Image();
@@ -452,13 +483,13 @@ async function loadPoseSprite(gesture, statusEl) {
 
 async function preloadAllPoses() {
   const uniqueGestures = [...new Set(scenes.map(s => s.gesture || "idle"))];
-  await Promise.all(uniqueGestures.map(async g => {
+  await runThrottled(uniqueGestures, async g => {
     await loadPoseSprite(g);
     document.querySelectorAll(`[id="poseStatus-${g}"]`).forEach(el => {
       el.textContent = poseSprites[g] ? "Pose ready ✓" : "Pose generation failed — using fallback.";
     });
     updatePoseThumbnails(g);
-  }));
+  });
 }
 
 // Static fallback if a pose sprite hasn't loaded yet (first paint / slow net)
