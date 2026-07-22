@@ -45,14 +45,21 @@
   <div class="status" id="breakdownStatus"></div>
 </div>
 
+<div class="panel" id="rigPanel" style="display:none;">
+  <h2 style="margin-top:0;">3. Character Rig</h2>
+  <div class="status" id="rigStatusEl">Not generated yet.</div>
+  <img id="rigThumb" style="display:none; max-height:220px; border-radius:8px; border:1px solid #45403a; margin-bottom:6px; background:#2a2620;">
+  <button id="regenRigBtn" class="secondary">🔄 Regenerate rig</button>
+</div>
+
 <div class="panel" id="scenesPanel" style="display:none;">
-  <h2 style="margin-top:0;">3. Scenes</h2>
+  <h2 style="margin-top:0;">4. Scenes</h2>
   <div id="scenesList"></div>
   <button id="renderAllBtn" style="display:none;">Render all scene animations</button>
 </div>
 
 <div class="panel" id="assemblePanel" style="display:none;">
-  <h2 style="margin-top:0;">4. Assemble final video</h2>
+  <h2 style="margin-top:0;">5. Assemble final video</h2>
   <p class="status">Upload your own raw voice recording per scene below — it'll be automatically cleaned (noise reduction + volume normalization) before being mixed in. Leave scenes blank to preview silent.</p>
   <div id="audioUploads"></div>
   <button id="assembleBtn" class="secondary">Build final video</button>
@@ -231,13 +238,29 @@ Vary the gesture and setting scene-to-scene to match the action and location des
     statusEl.textContent = `Got ${scenes.length} scenes. Generating backgrounds...`;
     renderSceneList();
     await preloadAllBackgrounds();
-    statusEl.textContent = `Got ${scenes.length} scenes. Backgrounds ready. Generating poses...`;
-    await preloadAllPoses();
+    statusEl.textContent = `Got ${scenes.length} scenes. Backgrounds ready. Generating character rig...`;
+    document.getElementById("rigPanel").style.display = "block";
+    await generateCharacterRig(document.getElementById("rigStatusEl"));
+    updateRigThumbnail();
     statusEl.textContent = `Got ${scenes.length} scenes. Backgrounds ready.`;
   } catch (err) {
     statusEl.textContent = "Error: " + err.message;
   }
 };
+
+document.getElementById("regenRigBtn").onclick = async () => {
+  await generateCharacterRig(document.getElementById("rigStatusEl"));
+  updateRigThumbnail();
+};
+
+function updateRigThumbnail() {
+  const thumb = document.getElementById("rigThumb");
+  if (rigParts && rigParts.torso) {
+    // Show the torso piece as a quick visual confirmation the rig generated something reasonable
+    thumb.src = rigParts.torso.toDataURL();
+    thumb.style.display = "block";
+  }
+}
 
 function renderSceneList() {
   const list = document.getElementById("scenesList");
@@ -255,9 +278,6 @@ function renderSceneList() {
       <div class="status" id="bgStatus-${s.number}">Waiting to generate background...</div>
       <img id="bgThumb-${s.number}" style="display:none; max-width:220px; border-radius:8px; border:1px solid #d8cdb8; margin-bottom:6px;">
       <button data-scene="${s.number}" class="regenBtn secondary" style="margin-right:8px;">🔄 New background</button>
-      <div class="status" id="poseStatus-${s.gesture}">Waiting to generate pose (${s.gesture})...</div>
-      <img id="poseThumb-${s.gesture}" style="display:none; max-height:160px; border-radius:8px; border:1px solid #d8cdb8; margin-bottom:6px;">
-      <button data-gesture="${s.gesture}" class="regenPoseBtn secondary" style="margin-right:8px;">🔄 New pose (${s.gesture})</button>
       <canvas id="canvas-${s.number}" width="${CANVAS_W}" height="${CANVAS_H}"></canvas>
       <button data-scene="${s.number}" class="renderOneBtn">Render this scene's clip</button>
       <video id="video-${s.number}" style="display:none;" controls></video>
@@ -276,54 +296,48 @@ function renderSceneList() {
       loadSceneBackground(scene, document.getElementById(`bgStatus-${num}`), document.getElementById(`bgThumb-${num}`));
     };
   });
-  document.querySelectorAll(".regenPoseBtn").forEach(btn => {
-    btn.onclick = async () => {
-      const gesture = btn.dataset.gesture;
-      const statusEl = document.getElementById(`poseStatus-${gesture}`);
-      await loadPoseSprite(gesture, statusEl);
-      updatePoseThumbnails(gesture);
-    };
-  });
   buildAudioUploadUI();
 }
 
-function updatePoseThumbnails(gesture) {
-  const sprite = poseSprites[gesture];
-  if (!sprite) return;
-  document.querySelectorAll(`img[id="poseThumb-${gesture}"]`).forEach(img => {
-    img.src = sprite.src;
-    img.style.display = "block";
-  });
-}
-
 // ============ POSES ============
-// With a single flat illustration (not separate limbs), gestures are expressed
-// as whole-figure motion: bounce, sway, lean, and a touch of squash/stretch —
-// the same trick classic limited-animation anime uses for cutout characters.
+// Real jointed motion: each limb has an angle around its pivot (shoulder,
+// hip), animated with fluid, somewhat exaggerated curves — the same idea
+// as stick-figure fight/animation videos, just wearing real chibi art.
+// angle 0 = limb hanging straight down from its pivot.
 function getPose(gesture, t) {
-  const idleBob = Math.sin(t * Math.PI * 2 * 1.2) * 5;
+  const idleBob = Math.sin(t * Math.PI * 2 * 1.2) * 4;
   switch (gesture) {
     case "wave":
-      return { sway: Math.sin(t * Math.PI * 8) * 0.06, bob: idleBob * 0.6, torsoTilt: 0.02, squash: 1 };
+      return { armL: 0.15, armR: -2.3 + Math.sin(t * Math.PI * 8) * 0.35, legL: 0.05, legR: -0.05,
+                headTilt: 0.03, torsoTilt: 0, bob: idleBob * 0.5 };
     case "point_forward":
-      return { sway: 0, bob: idleBob * 0.3, torsoTilt: 0.03, squash: 1 };
+      return { armL: 0.1, armR: -1.55, legL: 0, legR: 0,
+                headTilt: 0, torsoTilt: 0.02, bob: idleBob * 0.3 };
     case "arms_crossed":
-      return { sway: 0, bob: idleBob * 0.3, torsoTilt: -0.015, squash: 1 };
+      return { armL: 0.9, armR: -0.9, legL: 0.03, legR: -0.03,
+                headTilt: -0.02, torsoTilt: 0, bob: idleBob * 0.3 };
     case "shrug":
-      return { sway: Math.sin(t * Math.PI * 3) * 0.03, bob: -Math.abs(Math.sin(t * Math.PI * 2)) * 8, torsoTilt: 0, squash: 1 + Math.abs(Math.sin(t*Math.PI*2))*0.03 };
+      return { armL: 0.6 + Math.sin(t*Math.PI*3)*0.08, armR: -0.6 - Math.sin(t*Math.PI*3)*0.08,
+                legL: 0, legR: 0, headTilt: 0, torsoTilt: 0, bob: -Math.abs(Math.sin(t * Math.PI * 2)) * 6 };
     case "sit":
-      return { sway: 0, bob: 55, torsoTilt: 0, squash: 0.92 };
+      return { armL: 0.25, armR: -0.25, legL: 1.3, legR: -1.3,
+                headTilt: 0, torsoTilt: 0, bob: 60 };
     case "walk":
       const cyc = Math.sin(t * Math.PI * 6);
-      return { sway: cyc * 0.03, bob: Math.abs(cyc) * 5, torsoTilt: cyc * 0.02, squash: 1 };
+      return { armL: 0.5 * cyc, armR: -0.5 * cyc, legL: 0.6 * cyc, legR: -0.6 * cyc,
+                headTilt: 0, torsoTilt: 0.03 * cyc, bob: Math.abs(cyc) * 4 };
     case "think":
-      return { sway: 0, bob: idleBob * 0.3, torsoTilt: -0.04, squash: 1 };
+      return { armL: 0.15, armR: -2.0, legL: 0, legR: 0,
+                headTilt: 0.12, torsoTilt: -0.03, bob: idleBob * 0.3 };
     case "cheer":
-      return { sway: Math.sin(t*Math.PI*6)*0.04, bob: -Math.abs(Math.sin(t * Math.PI * 3)) * 12, torsoTilt: 0, squash: 1 + Math.abs(Math.sin(t*Math.PI*3))*0.04 };
+      return { armL: 2.6 + Math.sin(t*Math.PI*6)*0.12, armR: -2.6 - Math.sin(t*Math.PI*6)*0.12,
+                legL: 0.15, legR: -0.15, headTilt: 0, torsoTilt: 0, bob: -Math.abs(Math.sin(t * Math.PI * 3)) * 10 };
     case "look_up":
-      return { sway: 0, bob: idleBob * 0.4, torsoTilt: -0.06, squash: 1 };
+      return { armL: 0.1, armR: -0.1, legL: 0, legR: 0,
+                headTilt: -0.25, torsoTilt: -0.05, bob: idleBob * 0.4 };
     default:
-      return { sway: 0, bob: idleBob, torsoTilt: 0, squash: 1 };
+      return { armL: 0.12, armR: -0.12, legL: 0, legR: 0,
+                headTilt: 0.02, torsoTilt: 0, bob: idleBob };
   }
 }
 
@@ -420,50 +434,67 @@ function drawSettingFallback(ctx, setting, t) {
   }
 }
 
-// ============ CHARACTER (real anime-style art, animated as a cutout) ============
-// We no longer hand-draw the body from primitives — that's what was reading as
-// "robotic." Instead we load the actual character illustration once and animate
-// it as a whole (bob, sway, lean, tilt, slight squash/stretch), like a paper
-// cutout / classic 2D "limited animation" anime style. This guarantees the
-// character always looks exactly like the reference art, every scene.
-// ============ CHARACTER (real anime-style art, one image per pose) ============
-// Instead of animating a single flat image, we generate one real AI image
-// PER GESTURE (wave, point, sit, walk, etc.). Note: an earlier version tried
-// image-to-image using your uploaded photo as a reference, but that route
-// was unreliable (it sometimes dropped the character entirely). This uses
-// plain, reliable text-to-image with a strong "single character, plain
-// background" description instead — the same method that already works
-// well for the scene backgrounds.
-let poseSprites = {}; // gesture name -> loaded Image
+// ============ CHARACTER RIG (real anime art, real joints) ============
+// One T-pose reference sheet is generated (arms out, legs apart), then cut
+// into head/torso/arm/leg pieces with the white background keyed out to
+// transparency. Each piece is drawn at a pivot point and rotated per-frame
+// using the angles from getPose() — real jointed motion instead of a single
+// flat image swaying as a whole, closer to how stick-figure animations move.
+let rigParts = null; // { torso, head, armL, armR, legL, legR } each a <canvas>
+let rigStatus = "not started";
 
-const POSE_PROMPTS = {
-  idle: "standing relaxed, hands together in front, gentle smile",
-  wave: "waving one hand energetically above shoulder, big smile",
-  point_forward: "pointing forward with one arm extended, determined expression",
-  arms_crossed: "both arms crossed over chest, confident pose",
-  shrug: "shrugging shoulders with both hands raised palms up, playful confused expression",
-  sit: "sitting cross-legged on the ground, relaxed pose",
-  walk: "mid-stride walking pose, one arm swinging forward, dynamic",
-  think: "one hand on chin, thoughtful pose, looking up slightly",
-  cheer: "cheering with both arms raised up in victory, joyful expression",
-  look_up: "looking upward with hopeful expression, hands clasped"
-};
-
-function buildPosePrompt(gesture) {
-  const base = POSE_PROMPTS[gesture] || POSE_PROMPTS.idle;
-  return `single anime chibi girl character, full body, centered, ${base}, ` +
+function buildRigPrompt() {
+  return `single anime chibi girl character reference sheet, full body, T-pose, arms held straight out ` +
+    `horizontally to the sides, legs shoulder-width apart, facing camera directly, symmetrical, ` +
     `black bob haircut, black bangs, large anime eyes, green hoodie with drawstrings, red knit scarf, ` +
     `black skirt over black leggings, black shoes, flat cel-shaded illustration, clean bold linework, ` +
-    `solid plain white background, no scenery, no props, no other characters, character reference sheet style`;
+    `solid plain white background, no scenery, no props, no shadow, character turnaround sheet style`;
 }
 
-// Fetches as a blob (same trick as backgrounds) so the canvas recording
-// never gets cross-origin tainted.
-async function loadPoseSprite(gesture, statusEl) {
+// Turns near-white pixels transparent so cut-out limb pieces don't carry a
+// white box around them when rotated over the background art.
+function keyOutWhite(img) {
+  const c = document.createElement("canvas");
+  c.width = img.width; c.height = img.height;
+  const cctx = c.getContext("2d");
+  cctx.drawImage(img, 0, 0);
+  const frame = cctx.getImageData(0, 0, c.width, c.height);
+  const d = frame.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i] > 232 && d[i + 1] > 232 && d[i + 2] > 232) d[i + 3] = 0;
+  }
+  cctx.putImageData(frame, 0, 0);
+  return c;
+}
+
+function cropPiece(sourceCanvas, fx, fy, fw, fh) {
+  const sw = sourceCanvas.width, sh = sourceCanvas.height;
+  const sx = fx * sw, sy = fy * sh, cw = fw * sw, ch = fh * sh;
+  const c = document.createElement("canvas");
+  c.width = cw; c.height = ch;
+  c.getContext("2d").drawImage(sourceCanvas, sx, sy, cw, ch, 0, 0, cw, ch);
+  return c;
+}
+
+// Rough T-pose proportions as fractions of the sheet. These are estimates —
+// since the sheet itself is AI-generated (not hand-rigged art), the crop
+// boundaries may need nudging once you see the first render. They're kept
+// as plain constants here specifically so they're easy to adjust.
+const RIG_REGIONS = {
+  head:  { fx: 0.30, fy: 0.00, fw: 0.40, fh: 0.26 },
+  torso: { fx: 0.32, fy: 0.20, fw: 0.36, fh: 0.38 },
+  armL:  { fx: 0.02, fy: 0.20, fw: 0.32, fh: 0.20 }, // screen-left arm, extends toward torso
+  armR:  { fx: 0.66, fy: 0.20, fw: 0.32, fh: 0.20 }, // screen-right arm
+  legL:  { fx: 0.30, fy: 0.55, fw: 0.20, fh: 0.45 },
+  legR:  { fx: 0.50, fy: 0.55, fw: 0.20, fh: 0.45 }
+};
+
+async function generateCharacterRig(statusEl) {
   const seed = Math.floor(Math.random() * 1000000);
-  const url = `${POLLINATIONS_BASE}${encodeURIComponent(buildPosePrompt(gesture))}` +
-    `?width=600&height=900&seed=${seed}&nologo=true`;
-  if (statusEl) statusEl.textContent = "Generating pose...";
+  const url = `${POLLINATIONS_BASE}${encodeURIComponent(buildRigPrompt())}` +
+    `?width=800&height=800&seed=${seed}&nologo=true`;
+  rigStatus = "generating";
+  if (statusEl) statusEl.textContent = "Generating character rig (T-pose)...";
   try {
     const res = await fetchWithRetry(url);
     const blob = await res.blob();
@@ -474,50 +505,62 @@ async function loadPoseSprite(gesture, statusEl) {
       img.onerror = reject;
       img.src = objectUrl;
     });
-    poseSprites[gesture] = img;
-    if (statusEl) statusEl.textContent = "Pose ready ✓";
+    const keyed = keyOutWhite(img);
+    rigParts = {
+      head: cropPiece(keyed, RIG_REGIONS.head.fx, RIG_REGIONS.head.fy, RIG_REGIONS.head.fw, RIG_REGIONS.head.fh),
+      torso: cropPiece(keyed, RIG_REGIONS.torso.fx, RIG_REGIONS.torso.fy, RIG_REGIONS.torso.fw, RIG_REGIONS.torso.fh),
+      armL: cropPiece(keyed, RIG_REGIONS.armL.fx, RIG_REGIONS.armL.fy, RIG_REGIONS.armL.fw, RIG_REGIONS.armL.fh),
+      armR: cropPiece(keyed, RIG_REGIONS.armR.fx, RIG_REGIONS.armR.fy, RIG_REGIONS.armR.fw, RIG_REGIONS.armR.fh),
+      legL: cropPiece(keyed, RIG_REGIONS.legL.fx, RIG_REGIONS.legL.fy, RIG_REGIONS.legL.fw, RIG_REGIONS.legL.fh),
+      legR: cropPiece(keyed, RIG_REGIONS.legR.fx, RIG_REGIONS.legR.fy, RIG_REGIONS.legR.fw, RIG_REGIONS.legR.fh)
+    };
+    rigStatus = "ready";
+    if (statusEl) statusEl.textContent = "Character rig ready ✓";
   } catch (err) {
-    if (statusEl) statusEl.textContent = "Pose generation failed — using fallback. (" + err.message + ")";
+    rigStatus = "failed";
+    if (statusEl) statusEl.textContent = "Rig generation failed — retry below. (" + err.message + ")";
   }
 }
 
-async function preloadAllPoses() {
-  const uniqueGestures = [...new Set(scenes.map(s => s.gesture || "idle"))];
-  await runThrottled(uniqueGestures, async g => {
-    await loadPoseSprite(g);
-    document.querySelectorAll(`[id="poseStatus-${g}"]`).forEach(el => {
-      el.textContent = poseSprites[g] ? "Pose ready ✓" : "Pose generation failed — using fallback.";
-    });
-    updatePoseThumbnails(g);
-  });
+// Draws one limb piece rotating around a pivot. Since the source art was
+// cut from a T-pose (arms/legs extended sideways), baseAngle brings it to
+// a natural hanging position before the pose's own angle is layered on.
+function drawLimbPiece(ctx, piece, pivotX, pivotY, baseAngle, poseAngle, anchorAtStart) {
+  if (!piece) return;
+  ctx.save();
+  ctx.translate(pivotX, pivotY);
+  ctx.rotate(baseAngle + poseAngle);
+  const w = piece.width, h = piece.height;
+  const ax = anchorAtStart ? 0 : -w;
+  ctx.drawImage(piece, ax, -h / 2, w, h);
+  ctx.restore();
 }
 
-// Static fallback if a pose sprite hasn't loaded yet (first paint / slow net)
-const CHARACTER_IMG = new Image();
-let characterImgLoaded = false;
-CHARACTER_IMG.onload = () => { characterImgLoaded = true; };
-CHARACTER_IMG.src = "assets/character.png";
-
-function drawCharacter(ctx, pose, gesture) {
-  const sprite = poseSprites[gesture] || (characterImgLoaded ? CHARACTER_IMG : null);
-  if (!sprite) return;
+function drawCharacter(ctx, pose) {
+  if (rigStatus !== "ready" || !rigParts) return;
   ctx.save();
+  ctx.translate(0, pose.bob || 0);
 
-  const sway = pose.sway || 0;
-  const lean = pose.torsoTilt || 0;
-  const bob = pose.bob || 0;
-  const squash = pose.squash || 1;
+  const legPivotY = 20;
+  drawLimbPiece(ctx, rigParts.legL, -22, legPivotY, Math.PI / 2, pose.legL || 0, true);
+  drawLimbPiece(ctx, rigParts.legR, 22, legPivotY, Math.PI / 2, pose.legR || 0, true);
 
-  ctx.translate(0, bob);
-  ctx.rotate(lean + sway);
-  ctx.scale(1 / squash, squash);
+  ctx.save();
+  ctx.rotate(pose.torsoTilt || 0);
+  const tW = rigParts.torso.width * 0.85, tH = rigParts.torso.height * 0.85;
+  ctx.drawImage(rigParts.torso, -tW / 2, -tH * 0.75, tW, tH);
 
-  const targetH = 420;
-  const scale = targetH / sprite.height;
-  const w = sprite.width * scale;
-  const h = sprite.height * scale;
+  const armPivotY = -tH * 0.55;
+  drawLimbPiece(ctx, rigParts.armL, -tW * 0.35, armPivotY, Math.PI / 2, pose.armL || 0, true);
+  drawLimbPiece(ctx, rigParts.armR, tW * 0.35, armPivotY, -Math.PI / 2, -(pose.armR || 0), true);
 
-  ctx.drawImage(sprite, -w / 2, -h + 40, w, h);
+  ctx.save();
+  ctx.rotate(pose.headTilt || 0);
+  const hW = rigParts.head.width * 0.9, hH = rigParts.head.height * 0.9;
+  ctx.drawImage(rigParts.head, -hW / 2, -tH * 0.75 - hH * 0.92, hW, hH);
+  ctx.restore();
+
+  ctx.restore();
   ctx.restore();
 }
 
@@ -570,7 +613,7 @@ function renderScene(num) {
       ctx.save();
       ctx.translate(CANVAS_W / 2 + camX, CANVAS_H / 2 + 60);
       ctx.scale(camScale, camScale);
-      drawCharacter(ctx, pose, scene.gesture || "idle");
+      drawCharacter(ctx, pose);
       ctx.restore();
 
       if (now - startTime < durationMs) requestAnimationFrame(draw);
