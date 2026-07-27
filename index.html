@@ -46,10 +46,9 @@
 </div>
 
 <div class="panel" id="rigPanel" style="display:none;">
-  <h2 style="margin-top:0;">3. Character Rig</h2>
-  <div class="status" id="rigStatusEl">Not generated yet.</div>
-  <img id="rigThumb" style="display:none; max-height:220px; border-radius:8px; border:1px solid #45403a; margin-bottom:6px; background:#2a2620;">
-  <button id="regenRigBtn" class="secondary">🔄 Regenerate rig</button>
+  <h2 style="margin-top:0;">3. Character Sprites</h2>
+  <div class="status" id="rigStatusEl">Not loaded yet.</div>
+  <div id="spriteStrip" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
 </div>
 
 <div class="panel" id="scenesPanel" style="display:none;">
@@ -238,29 +237,14 @@ Vary the gesture and setting scene-to-scene to match the action and location des
     statusEl.textContent = `Got ${scenes.length} scenes. Generating backgrounds...`;
     renderSceneList();
     await preloadAllBackgrounds();
-    statusEl.textContent = `Got ${scenes.length} scenes. Backgrounds ready. Generating character rig...`;
+    statusEl.textContent = `Got ${scenes.length} scenes. Backgrounds ready. Loading character sprites...`;
     document.getElementById("rigPanel").style.display = "block";
-    await generateCharacterRig(document.getElementById("rigStatusEl"));
-    updateRigThumbnail();
+    await preloadSprites(document.getElementById("rigStatusEl"));
     statusEl.textContent = `Got ${scenes.length} scenes. Backgrounds ready.`;
   } catch (err) {
     statusEl.textContent = "Error: " + err.message;
   }
 };
-
-document.getElementById("regenRigBtn").onclick = async () => {
-  await generateCharacterRig(document.getElementById("rigStatusEl"));
-  updateRigThumbnail();
-};
-
-function updateRigThumbnail() {
-  const thumb = document.getElementById("rigThumb");
-  if (rigParts && rigParts.torso) {
-    // Show the torso piece as a quick visual confirmation the rig generated something reasonable
-    thumb.src = rigParts.torso.toDataURL();
-    thumb.style.display = "block";
-  }
-}
 
 function renderSceneList() {
   const list = document.getElementById("scenesList");
@@ -300,44 +284,35 @@ function renderSceneList() {
 }
 
 // ============ POSES ============
-// Real jointed motion: each limb has an angle around its pivot (shoulder,
-// hip), animated with fluid, somewhat exaggerated curves — the same idea
-// as stick-figure fight/animation videos, just wearing real chibi art.
-// angle 0 = limb hanging straight down from its pivot.
+// Each gesture uses a fixed, hand-drawn full-body sprite (see GESTURE_SPRITES
+// below) instead of a live-generated, procedurally-rigged one. getPose() just
+// returns a light per-frame transform (bob / tilt / squash) layered on top of
+// that sprite so it still feels alive, without needing separate limb pieces.
 function getPose(gesture, t) {
   const idleBob = Math.sin(t * Math.PI * 2 * 1.2) * 4;
   switch (gesture) {
     case "wave":
-      return { armL: 0.15, armR: -2.3 + Math.sin(t * Math.PI * 8) * 0.35, legL: 0.05, legR: -0.05,
-                headTilt: 0.03, torsoTilt: 0, bob: idleBob * 0.5 };
+      return { bob: idleBob * 0.5, tilt: Math.sin(t * Math.PI * 8) * 0.05, scaleX: 1, scaleY: 1 };
     case "point_forward":
-      return { armL: 0.1, armR: -1.55, legL: 0, legR: 0,
-                headTilt: 0, torsoTilt: 0.02, bob: idleBob * 0.3 };
+      return { bob: idleBob * 0.3, tilt: 0.02, scaleX: 1, scaleY: 1 };
     case "arms_crossed":
-      return { armL: 0.9, armR: -0.9, legL: 0.03, legR: -0.03,
-                headTilt: -0.02, torsoTilt: 0, bob: idleBob * 0.3 };
+      return { bob: idleBob * 0.3, tilt: -0.02, scaleX: 1, scaleY: 1 };
     case "shrug":
-      return { armL: 0.6 + Math.sin(t*Math.PI*3)*0.08, armR: -0.6 - Math.sin(t*Math.PI*3)*0.08,
-                legL: 0, legR: 0, headTilt: 0, torsoTilt: 0, bob: -Math.abs(Math.sin(t * Math.PI * 2)) * 6 };
+      return { bob: -Math.abs(Math.sin(t * Math.PI * 2)) * 6, tilt: Math.sin(t * Math.PI * 3) * 0.03, scaleX: 1, scaleY: 1 };
     case "sit":
-      return { armL: 0.25, armR: -0.25, legL: 1.3, legR: -1.3,
-                headTilt: 0, torsoTilt: 0, bob: 60 };
+      return { bob: 60, tilt: 0, scaleX: 1, scaleY: 1 };
     case "walk":
       const cyc = Math.sin(t * Math.PI * 6);
-      return { armL: 0.5 * cyc, armR: -0.5 * cyc, legL: 0.6 * cyc, legR: -0.6 * cyc,
-                headTilt: 0, torsoTilt: 0.03 * cyc, bob: Math.abs(cyc) * 4 };
+      return { bob: Math.abs(cyc) * 4, tilt: 0.03 * cyc, scaleX: 1, scaleY: 1, xOffset: cyc * 6 };
     case "think":
-      return { armL: 0.15, armR: -2.0, legL: 0, legR: 0,
-                headTilt: 0.12, torsoTilt: -0.03, bob: idleBob * 0.3 };
+      return { bob: idleBob * 0.3, tilt: 0.05, scaleX: 1, scaleY: 1 };
     case "cheer":
-      return { armL: 2.6 + Math.sin(t*Math.PI*6)*0.12, armR: -2.6 - Math.sin(t*Math.PI*6)*0.12,
-                legL: 0.15, legR: -0.15, headTilt: 0, torsoTilt: 0, bob: -Math.abs(Math.sin(t * Math.PI * 3)) * 10 };
+      const jump = Math.abs(Math.sin(t * Math.PI * 3));
+      return { bob: -jump * 10, tilt: 0, scaleX: 1 - jump * 0.03, scaleY: 1 + jump * 0.05 };
     case "look_up":
-      return { armL: 0.1, armR: -0.1, legL: 0, legR: 0,
-                headTilt: -0.25, torsoTilt: -0.05, bob: idleBob * 0.4 };
+      return { bob: idleBob * 0.4, tilt: -0.04, scaleX: 1, scaleY: 1 };
     default:
-      return { armL: 0.12, armR: -0.12, legL: 0, legR: 0,
-                headTilt: 0.02, torsoTilt: 0, bob: idleBob };
+      return { bob: idleBob, tilt: 0.01, scaleX: 1, scaleY: 1 };
   }
 }
 
@@ -434,133 +409,79 @@ function drawSettingFallback(ctx, setting, t) {
   }
 }
 
-// ============ CHARACTER RIG (real anime art, real joints) ============
-// One T-pose reference sheet is generated (arms out, legs apart), then cut
-// into head/torso/arm/leg pieces with the white background keyed out to
-// transparency. Each piece is drawn at a pivot point and rotated per-frame
-// using the angles from getPose() — real jointed motion instead of a single
-// flat image swaying as a whole, closer to how stick-figure animations move.
-let rigParts = null; // { torso, head, armL, armR, legL, legR } each a <canvas>
-let rigStatus = "not started";
-
-function buildRigPrompt() {
-  return `single anime chibi girl character reference sheet, full body, T-pose, arms held straight out ` +
-    `horizontally to the sides, legs shoulder-width apart, facing camera directly, symmetrical, ` +
-    `black bob haircut, black bangs, large anime eyes, green hoodie with drawstrings, red knit scarf, ` +
-    `black skirt over black leggings, black shoes, flat cel-shaded illustration, clean bold linework, ` +
-    `solid plain white background, no scenery, no props, no shadow, character turnaround sheet style`;
-}
-
-// Turns near-white pixels transparent so cut-out limb pieces don't carry a
-// white box around them when rotated over the background art.
-function keyOutWhite(img) {
-  const c = document.createElement("canvas");
-  c.width = img.width; c.height = img.height;
-  const cctx = c.getContext("2d");
-  cctx.drawImage(img, 0, 0);
-  const frame = cctx.getImageData(0, 0, c.width, c.height);
-  const d = frame.data;
-  for (let i = 0; i < d.length; i += 4) {
-    if (d[i] > 232 && d[i + 1] > 232 && d[i + 2] > 232) d[i + 3] = 0;
-  }
-  cctx.putImageData(frame, 0, 0);
-  return c;
-}
-
-function cropPiece(sourceCanvas, fx, fy, fw, fh) {
-  const sw = sourceCanvas.width, sh = sourceCanvas.height;
-  const sx = fx * sw, sy = fy * sh, cw = fw * sw, ch = fh * sh;
-  const c = document.createElement("canvas");
-  c.width = cw; c.height = ch;
-  c.getContext("2d").drawImage(sourceCanvas, sx, sy, cw, ch, 0, 0, cw, ch);
-  return c;
-}
-
-// Rough T-pose proportions as fractions of the sheet. These are estimates —
-// since the sheet itself is AI-generated (not hand-rigged art), the crop
-// boundaries may need nudging once you see the first render. They're kept
-// as plain constants here specifically so they're easy to adjust.
-const RIG_REGIONS = {
-  head:  { fx: 0.30, fy: 0.00, fw: 0.40, fh: 0.26 },
-  torso: { fx: 0.32, fy: 0.20, fw: 0.36, fh: 0.38 },
-  armL:  { fx: 0.02, fy: 0.20, fw: 0.32, fh: 0.20 }, // screen-left arm, extends toward torso
-  armR:  { fx: 0.66, fy: 0.20, fw: 0.32, fh: 0.20 }, // screen-right arm
-  legL:  { fx: 0.30, fy: 0.55, fw: 0.20, fh: 0.45 },
-  legR:  { fx: 0.50, fy: 0.55, fw: 0.20, fh: 0.45 }
+// ============ CHARACTER SPRITES (fixed hand-picked art, no live generation) ============
+// Each gesture maps to one pre-made, consistent full-body sprite shipped in
+// assets/sprites/. This replaces the old approach of asking Pollinations to
+// generate a fresh T-pose reference sheet every run and auto-cutting it into
+// limb pieces with fixed crop-percentages — that broke constantly because
+// the AI output's framing/proportions never came back the same way twice.
+// Loading fixed local images is instant and can't come back "crashing" or
+// with a missing limb.
+const GESTURE_SPRITES = {
+  idle: "assets/sprites/idle.png",
+  wave: "assets/sprites/wave.png",
+  point_forward: "assets/sprites/point_forward.png",
+  arms_crossed: "assets/sprites/arms_crossed.png",
+  shrug: "assets/sprites/shrug.png",
+  sit: "assets/sprites/sit.png",
+  walk: "assets/sprites/walk.png",
+  think: "assets/sprites/think.png",
+  cheer: "assets/sprites/cheer.png",
+  look_up: "assets/sprites/look_up.png"
 };
 
-async function generateCharacterRig(statusEl) {
-  const seed = Math.floor(Math.random() * 1000000);
-  const url = `${POLLINATIONS_BASE}${encodeURIComponent(buildRigPrompt())}` +
-    `?width=800&height=800&seed=${seed}&nologo=true`;
-  rigStatus = "generating";
-  if (statusEl) statusEl.textContent = "Generating character rig (T-pose)...";
-  try {
-    const res = await fetchWithRetry(url);
-    const blob = await res.blob();
-    const objectUrl = URL.createObjectURL(blob);
+let spriteImages = {}; // gesture -> loaded <img>
+let spriteStatus = "not started";
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
     const img = new Image();
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = reject;
-      img.src = objectUrl;
-    });
-    const keyed = keyOutWhite(img);
-    rigParts = {
-      head: cropPiece(keyed, RIG_REGIONS.head.fx, RIG_REGIONS.head.fy, RIG_REGIONS.head.fw, RIG_REGIONS.head.fh),
-      torso: cropPiece(keyed, RIG_REGIONS.torso.fx, RIG_REGIONS.torso.fy, RIG_REGIONS.torso.fw, RIG_REGIONS.torso.fh),
-      armL: cropPiece(keyed, RIG_REGIONS.armL.fx, RIG_REGIONS.armL.fy, RIG_REGIONS.armL.fw, RIG_REGIONS.armL.fh),
-      armR: cropPiece(keyed, RIG_REGIONS.armR.fx, RIG_REGIONS.armR.fy, RIG_REGIONS.armR.fw, RIG_REGIONS.armR.fh),
-      legL: cropPiece(keyed, RIG_REGIONS.legL.fx, RIG_REGIONS.legL.fy, RIG_REGIONS.legL.fw, RIG_REGIONS.legL.fh),
-      legR: cropPiece(keyed, RIG_REGIONS.legR.fx, RIG_REGIONS.legR.fy, RIG_REGIONS.legR.fw, RIG_REGIONS.legR.fh)
-    };
-    rigStatus = "ready";
-    if (statusEl) statusEl.textContent = "Character rig ready ✓";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("failed to load " + src));
+    img.src = src;
+  });
+}
+
+async function preloadSprites(statusEl) {
+  spriteStatus = "loading";
+  if (statusEl) statusEl.textContent = "Loading character sprites...";
+  try {
+    const entries = Object.entries(GESTURE_SPRITES);
+    const loaded = await Promise.all(entries.map(([, src]) => loadImage(src)));
+    entries.forEach(([gesture], i) => { spriteImages[gesture] = loaded[i]; });
+    spriteStatus = "ready";
+    if (statusEl) statusEl.textContent = "Character sprites ready ✓";
+    const strip = document.getElementById("spriteStrip");
+    if (strip) {
+      strip.innerHTML = "";
+      entries.forEach(([gesture, src]) => {
+        const wrap = document.createElement("div");
+        wrap.style.textAlign = "center";
+        wrap.innerHTML = `<img src="${src}" style="height:64px; display:block; margin:0 auto;">
+          <div style="font-size:11px; opacity:0.7;">${gesture}</div>`;
+        strip.appendChild(wrap);
+      });
+    }
   } catch (err) {
-    rigStatus = "failed";
-    if (statusEl) statusEl.textContent = "Rig generation failed — retry below. (" + err.message + ")";
+    spriteStatus = "failed";
+    if (statusEl) statusEl.textContent = "Sprite loading failed — check assets/sprites/ files exist. (" + err.message + ")";
   }
 }
 
-// Draws one limb piece rotating around a pivot. Since the source art was
-// cut from a T-pose (arms/legs extended sideways), baseAngle brings it to
-// a natural hanging position before the pose's own angle is layered on.
-function drawLimbPiece(ctx, piece, pivotX, pivotY, baseAngle, poseAngle, anchorAtStart) {
-  if (!piece) return;
+// Draws the whole sprite for this gesture (falling back to idle if a
+// gesture has no sprite yet) with a light transform layered on top so it
+// still feels animated, even though it's one flat image rather than
+// separately jointed limb pieces.
+function drawCharacter(ctx, pose, gesture) {
+  const img = spriteImages[gesture] || spriteImages.idle;
+  if (spriteStatus !== "ready" || !img) return;
   ctx.save();
-  ctx.translate(pivotX, pivotY);
-  ctx.rotate(baseAngle + poseAngle);
-  const w = piece.width, h = piece.height;
-  const ax = anchorAtStart ? 0 : -w;
-  ctx.drawImage(piece, ax, -h / 2, w, h);
-  ctx.restore();
-}
-
-function drawCharacter(ctx, pose) {
-  if (rigStatus !== "ready" || !rigParts) return;
-  ctx.save();
-  ctx.translate(0, pose.bob || 0);
-
-  const legPivotY = 20;
-  drawLimbPiece(ctx, rigParts.legL, -22, legPivotY, Math.PI / 2, pose.legL || 0, true);
-  drawLimbPiece(ctx, rigParts.legR, 22, legPivotY, Math.PI / 2, pose.legR || 0, true);
-
-  ctx.save();
-  ctx.rotate(pose.torsoTilt || 0);
-  const tW = rigParts.torso.width * 0.85, tH = rigParts.torso.height * 0.85;
-  ctx.drawImage(rigParts.torso, -tW / 2, -tH * 0.75, tW, tH);
-
-  const armPivotY = -tH * 0.55;
-  drawLimbPiece(ctx, rigParts.armL, -tW * 0.35, armPivotY, Math.PI / 2, pose.armL || 0, true);
-  drawLimbPiece(ctx, rigParts.armR, tW * 0.35, armPivotY, -Math.PI / 2, -(pose.armR || 0), true);
-
-  ctx.save();
-  ctx.rotate(pose.headTilt || 0);
-  const hW = rigParts.head.width * 0.9, hH = rigParts.head.height * 0.9;
-  ctx.drawImage(rigParts.head, -hW / 2, -tH * 0.75 - hH * 0.92, hW, hH);
-  ctx.restore();
-
-  ctx.restore();
+  ctx.translate(pose.xOffset || 0, pose.bob || 0);
+  ctx.rotate(pose.tilt || 0);
+  ctx.scale(pose.scaleX || 1, pose.scaleY || 1);
+  const targetH = 260;
+  const w = img.width * (targetH / img.height), h = targetH;
+  ctx.drawImage(img, -w / 2, -h * 0.85, w, h);
   ctx.restore();
 }
 
@@ -613,14 +534,15 @@ function renderScene(num) {
       ctx.save();
       ctx.translate(CANVAS_W / 2 + camX, CANVAS_H / 2 + 60);
       ctx.scale(camScale, camScale);
-      drawCharacter(ctx, pose);
+      drawCharacter(ctx, pose, scene.gesture);
       ctx.restore();
 
       if (now - startTime < durationMs) requestAnimationFrame(draw);
       else recorder.stop();
     }
     requestAnimationFrame(draw);
-  });
+  }
+  );
 }
 
 document.getElementById("renderAllBtn").onclick = async () => {
